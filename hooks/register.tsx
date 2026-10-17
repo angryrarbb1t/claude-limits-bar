@@ -21,7 +21,7 @@ const clampRatio = (value: number) => Math.max(0.2, Math.min(0.8, value))
 const SHOW_DEMO = false
 
 const KINDS = ['five_hour', 'seven_day']
-const TIME_CELLS = 5
+const TIME_CELLS = 12
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const FLASH_MS = 2600
 // Как часто чат сверяется с показаниями других чатов.
@@ -37,18 +37,29 @@ const SEP_SVG =
   '<style>.s{fill:#cfcfcb}@media (prefers-color-scheme:dark){.s{fill:#4a4a48}}</style>' +
   '<rect class="s" width="1" height="12"/></svg>'
 
-// Пиктограммы окон: кольцо и подпись цвета текста времени (#898781 — снято
-// со скриншота приложения; для тёмной темы — близкий оттенок).
+// Пиктограммы окон цвета текста времени (#898781 — снято со скриншота приложения;
+// для тёмной темы — близкий оттенок): часы на 5:00 и календарь.
 const ICON_PX = 15
-const icon = (label: string, size: number) =>
+const icon = (body: string) =>
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
-  `<style>.r{fill:none;stroke:#898781}.l{fill:#898781;font:600 ${size}px -apple-system,system-ui,sans-serif}` +
-  '@media (prefers-color-scheme:dark){.r{stroke:#9a9893}.l{fill:#9a9893}}</style>' +
-  '<circle class="r" cx="8" cy="8" r="6.85" stroke-width="1.1"/>' +
-  `<text class="l" x="8" y="10.9" text-anchor="middle">${label}</text></svg>`
+  '<style>.i{fill:none;stroke:#898781;stroke-linecap:round}@media (prefers-color-scheme:dark){.i{stroke:#9a9893}}</style>' +
+  body +
+  '</svg>'
 export const ICONS: Record<string, { source: string; alt: string }> = {
-  five_hour: { source: icon('5', 8), alt: '5 часов' },
-  seven_day: { source: icon('W', 7.5), alt: 'Неделя' },
+  five_hour: {
+    source: icon(
+      '<circle class="i" cx="8" cy="8" r="6.85" stroke-width="1.1"/>' +
+        '<path class="i" d="M8 8V3.9M8 8L10.1 11.6" stroke-width="1.2"/>',
+    ),
+    alt: '5 часов',
+  },
+  seven_day: {
+    source: icon(
+      '<rect class="i" x="2.1" y="3.1" width="11.8" height="10.9" rx="2.2" stroke-width="1.1"/>' +
+        '<path class="i" d="M2.1 6.6h11.8M5.4 1.8v2.6M10.6 1.8v2.6" stroke-width="1.1"/>',
+    ),
+    alt: 'Неделя',
+  },
 }
 
 // Цвета — как в меню «Использование» и индикаторе контекста.
@@ -94,6 +105,14 @@ export const sessionTone = (pct: number, cfg: Config = DEFAULTS): Tone =>
 // Перерасход недели: до weekOver п.п. — оранжевый, дальше или с 80% — красный.
 export const overTone = (pct: number, elapsed: number, cfg: Config = DEFAULTS): Tone =>
   pct - elapsed * 100 >= cfg.weekOver || pct >= 80 ? 'hot' : 'warn'
+
+// Подпись у полоски: «19% / 2:11»; без времени до сброса — просто «0%».
+export const caption = (one: Limit, nowMs: number) => {
+  const pct = `${Math.round(one.percentUsed)}%`
+  const time = left(one.resetsAt, nowMs)
+
+  return { pct, rest: time ? ` / ${time}` : '' }
+}
 
 // До сброса: «4:16», а от суток — «5d».
 export const left = (resetsAt: string | undefined, nowMs: number) => {
@@ -412,7 +431,7 @@ export const register: Register = (on, options) => {
                   return <Text color={TERMINAL[p.part]}>{'━'.repeat(n)}</Text>
                 })}
               </Text>
-              <Text dimColor>{left(one.resetsAt, nowMs).padStart(TIME_CELLS)}</Text>
+              <Text dimColor>{(caption(one, nowMs).pct + caption(one, nowMs).rest).padStart(TIME_CELLS)}</Text>
             </Box>
           ))}
         </Box>
@@ -428,7 +447,7 @@ export const register: Register = (on, options) => {
     const leftPct = Math.round(share * 100)
     const labelCells = SHOW_DEMO ? 13 : 0
     // Примерно 8px на клетку, минус пиктограммы, время, подписи и промежутки.
-    const totalPx = (e.props.bodyColumns - labelCells) * 8 - 2 * (32 + ICON_PX + 6) - 24
+    const totalPx = (e.props.bodyColumns - labelCells) * 8 - 2 * (72 + ICON_PX + 6) - 24
 
     const halves = (rows: readonly Limit[], how: { hasSeam?: boolean; isDemo?: boolean } = {}) =>
       rows.map((one, i) => {
@@ -464,7 +483,10 @@ export const register: Register = (on, options) => {
               />
             </Box>
             <Box flexShrink={0}>
-              <Text dimColor>{left(one.resetsAt, nowMs)}</Text>
+              <Text>
+                <Text color="inactive">{caption(one, nowMs).pct}</Text>
+                <Text dimColor>{caption(one, nowMs).rest}</Text>
+              </Text>
             </Box>
             {isFirst && (
               <Box width={SEP_CELLS} flexShrink={0} justifyContent="center" alignItems="center">

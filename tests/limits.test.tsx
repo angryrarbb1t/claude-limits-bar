@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, caption, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -58,6 +58,14 @@ test('last colored segment has a rounded right end', async () => {
   expect(rounded(barSvg(segments({ kind: 'five_hour', percentUsed: 0 }, NOW), 200))).toEqual([])
 })
 
+test('caption: percent and time left', async () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  expect(caption({ kind: 'five_hour', percentUsed: 19.4, resetsAt: iso(NOW + 131 * 60_000) }, NOW)).toEqual({ pct: '19%', rest: ' / 2:11' })
+  expect(caption({ kind: 'seven_day', percentUsed: 21, resetsAt: iso(NOW + 5.2 * DAY) }, NOW)).toEqual({ pct: '21%', rest: ' / 5d' })
+  // Окно ещё не началось — без времени.
+  expect(caption({ kind: 'five_hour', percentUsed: 0 }, NOW)).toEqual({ pct: '0%', rest: '' })
+})
+
 test('time left', async () => {
   expect(left('2026-10-17T14:16:30Z', NOW)).toBe('4:16')
   expect(left('2026-10-17T10:05:00Z', NOW)).toBe('0:05')
@@ -95,8 +103,13 @@ test('band draws two bars and the split drags', async ($, on) => {
   // Пиктограммы окон: серые кольца с 5 и W, без прогресса.
   const icons = (await desk.findAll({ type: 'Svg' })).map(el => JSON.stringify(el))
   expect(icons.filter(el => el.includes('5 часов') || el.includes('Неделя\\"')).length).toBeGreaterThan(0)
-  expect(icons.some(el => el.includes('>5</text>'))).toBe(true)
-  expect(icons.some(el => el.includes('>W</text>'))).toBe(true)
+  // Часы на 5:00 (минутная на 12, часовая на 5) и календарь.
+  expect(icons.some(el => el.includes('M8 8V3.9M8 8L10.1 11.6'))).toBe(true)
+  expect(icons.some(el => el.includes('M2.1 6.6h11.8'))).toBe(true)
+  // Подпись: проценты и время до сброса.
+  expect(await desk.find({ text: '9%' })).toBeDefined()
+  expect(await desk.find({ text: ' / 4:00' })).toBeDefined()
+  expect(await desk.find({ text: '17%' })).toBeDefined()
   expect(await desk.find({ text: /d$/ })).toBeDefined()
   await desk.resize({ columns: 100, rows: 1 })
 
