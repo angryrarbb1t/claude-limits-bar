@@ -32,15 +32,22 @@ claude plugin marketplace add volodyatoxic/claude-limits-bar && claude plugin in
 
 ## Настройки
 
-В терминальном `claude` — `/config`, или командой `claude plugin configure limits-bar`:
+Работает и без настроек — ниже значения по умолчанию. Поменять: в терминальном `claude` набери `/plugin configure limits-bar@claude-limits-bar`, или из командной строки:
 
-| Настройка | По умолчанию |
-|---|---|
-| Сессия: оранжевый с, % | 60 |
-| Сессия: красный с, % | 75 |
-| Неделя: красный перерасход с, п.п. | 15 |
-| Анимация при переходе порога | вкл |
-| Уведомление при переходе порога | вкл |
+```bash
+echo '{"sessionWarn": "55", "notify": "false"}' | claude plugin configure limits-bar@claude-limits-bar --values-stdin
+```
+
+После этого перезапусти Claude Code.
+
+
+| Ключ | Что | По умолчанию |
+|---|---|---|
+| `sessionWarn` | Сессия: оранжевый с, % | 60 |
+| `sessionHot` | Сессия: красный с, % | 75 |
+| `weekOver` | Неделя: красный перерасход с, п.п. | 15 |
+| `animation` | Анимация при переходе порога | `true` |
+| `notify` | Уведомление при переходе порога | `true` |
 
 ## Автообновление
 
