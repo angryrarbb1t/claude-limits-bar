@@ -1,12 +1,26 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, left, weekElapsed } from '../hooks/register'
+import { barSvg, left, sessionTone, weekElapsed, weekTone } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
   component: 'AbovePrompt',
   props: { hasSurvey: false, isWorking: false, maxRows: 3, bodyColumns: 80, scroll, view: {} },
 } as const
+
+test('colors', async () => {
+  expect(sessionTone(59)).toBe('ok')
+  expect(sessionTone(60)).toBe('warn')
+  expect(sessionTone(75)).toBe('hot')
+  // Ровный расход — синий, даже на 85%.
+  expect(weekTone(85, 0.8)).toBe('ok')
+  // Обгоняем неделю на 15+ п.п. — оранжевый, а с 80% — красный.
+  expect(weekTone(55, 0.4)).toBe('warn')
+  expect(weekTone(85, 0.6)).toBe('hot')
+  expect(weekTone(30, 0.2)).toBe('ok')
+  expect(barSvg(65, 200, undefined, 'warn')).toContain('#f59e0b')
+  expect(barSvg(65, 200, undefined, 'hot')).toContain('#e5484d')
+})
 
 test('time left', async () => {
   const now = Date.parse('2026-10-17T10:00:00Z')

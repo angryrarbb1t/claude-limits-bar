@@ -13,13 +13,29 @@ const clampRatio = (value: number) => Math.max(0.2, Math.min(0.8, value))
 
 const KINDS = ['five_hour', 'seven_day']
 const TIME_CELLS = 5
-const TIME_WIDTH = 4
 
 // Синий и серая дорожка — как в меню «Использование» приложения.
 const BLUE = '#2f7de1'
+const ORANGE = '#f59e0b'
 const RED = '#e5484d'
 
-export const isHot = (pct: number) => pct >= 80
+export type Tone = 'ok' | 'warn' | 'hot'
+const FILL: Record<Tone, string> = { ok: BLUE, warn: ORANGE, hot: RED }
+const TERMINAL: Record<Tone, string> = { ok: 'suggestion', warn: 'warning', hot: 'error' }
+
+// 5 часов: просто по порогам.
+export const sessionTone = (pct: number): Tone => (pct >= 75 ? 'hot' : pct >= 60 ? 'warn' : 'ok')
+
+// Неделя: по темпу. Подкрашиваем, только когда расход обгоняет прошедшую
+// долю недели на AHEAD_PP процентных пунктов и больше; красный — если при
+// этом съедено 80% и больше. Ровный расход остаётся синим.
+export const AHEAD_PP = 15
+export const weekTone = (pct: number, elapsed: number | undefined): Tone => {
+  if (elapsed === undefined) return pct >= 80 ? 'hot' : 'ok'
+  if (pct - elapsed * 100 < AHEAD_PP) return 'ok'
+
+  return pct >= 80 ? 'hot' : 'warn'
+}
 
 // До сброса: «4:16», а от суток — «5d».
 export const left = (resetsAt: string | undefined, nowMs: number) => {
@@ -56,12 +72,12 @@ const canvas = (approxPx: number) => Math.max(60, Math.round(approxPx))
 
 // pace — доля прошедшей недели (по наведению). Опережает расход: слой под
 // синим, виден только правее него. Отстаёт: слой поверх синего.
-export const barSvg = (pct: number, approxPx = 350, pace?: number) => {
+export const barSvg = (pct: number, approxPx = 350, pace?: number, tone: Tone = 'ok') => {
   const w = canvas(approxPx)
   const r = BAR_PX / 2
   const used = Math.min(100, Math.max(0, pct)) / 100
   const fill = pct > 0 ? Math.max(BAR_PX, used * w) : 0
-  const color = isHot(pct) ? RED : BLUE
+  const color = FILL[tone]
   const shade =
     pace !== undefined && pace > 0
       ? `<rect class="p" width="${(Math.min(1, pace) * w).toFixed(1)}" height="${BAR_PX}" rx="${r}"/>`
@@ -78,6 +94,11 @@ export const barSvg = (pct: number, approxPx = 350, pace?: number) => {
       '@media (prefers-color-scheme:dark){.t{fill:#3a3a3a}.p{fill:#fff;fill-opacity:.15}}',
   )
 }
+
+const toneOf = (one: Limit, nowMs: number) =>
+  one.kind === 'seven_day'
+    ? weekTone(one.percentUsed, weekElapsed(one.resetsAt, nowMs))
+    : sessionTone(one.percentUsed)
 
 const pick = (list: readonly Limit[]) =>
   KINDS.map(kind => list.find(one => one.kind === kind)).filter(
@@ -152,7 +173,7 @@ export const register: Register = on => {
             return (
               <Box key={one.kind} gap={1}>
                 <Text>
-                  <Text color={isHot(one.percentUsed) ? 'error' : 'suggestion'}>{'━'.repeat(filled)}</Text>
+                  <Text color={TERMINAL[toneOf(one, nowMs)]}>{'━'.repeat(filled)}</Text>
                   <Text dimColor>{'─'.repeat(cells - filled)}</Text>
                 </Text>
                 <Text dimColor>{left(one.resetsAt, nowMs).padStart(TIME_CELLS)}</Text>
@@ -167,8 +188,8 @@ export const register: Register = on => {
     const { Box, Client, Svg, Text } = $.ui.resolve(e)
     const share = await read($, ratio)
     const hover = await read($, isHover)
-    // Примерно 8px на клетку, минус колонки времени и промежутки.
-    const totalPx = e.props.bodyColumns * 8 - 2 * 40 - 24
+    // Примерно 8px на клетку, минус время и промежутки.
+    const totalPx = e.props.bodyColumns * 8 - 2 * 32 - 24
     const leftPct = Math.round(share * 100)
 
     return (
@@ -186,17 +207,17 @@ export const register: Register = on => {
               key={one.kind}
               width={width}
               alignItems="center"
-              gap={1}
-              paddingRight={i === 0 && list.length > 1 ? 2 : 0}
+              gap={0.5}
+              paddingRight={i === 0 && list.length > 1 ? 1.5 : 0}
             >
               <Box flexGrow={1} flexShrink={1} minWidth={0}>
                 <Svg
-                  source={barSvg(one.percentUsed, barPx, hover ? elapsed : undefined)}
+                  source={barSvg(one.percentUsed, barPx, hover ? elapsed : undefined, toneOf(one, nowMs))}
                   height={BAR_PX}
                   alt={`${name}: ${Math.round(one.percentUsed)}%`}
                 />
               </Box>
-              <Box flexShrink={0} width={TIME_WIDTH} justifyContent="flex-end">
+              <Box flexShrink={0}>
                 <Text dimColor>{left(one.resetsAt, nowMs)}</Text>
               </Box>
             </Box>
