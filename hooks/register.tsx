@@ -37,9 +37,9 @@ const SEP_SVG =
 const ICON_PX = 15
 const icon = (label: string, size: number) =>
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
-  `<style>.r{fill:none;stroke:#898781}.l{fill:#898781;font:500 ${size}px -apple-system,system-ui,sans-serif}` +
+  `<style>.r{fill:none;stroke:#898781}.l{fill:#898781;font:600 ${size}px -apple-system,system-ui,sans-serif}` +
   '@media (prefers-color-scheme:dark){.r{stroke:#9a9893}.l{fill:#9a9893}}</style>' +
-  '<circle class="r" cx="8" cy="8" r="6.5" stroke-width="2"/>' +
+  '<circle class="r" cx="8" cy="8" r="6.6" stroke-width="1.6"/>' +
   `<text class="l" x="8" y="10.9" text-anchor="middle">${label}</text></svg>`
 export const ICONS: Record<string, { source: string; alt: string }> = {
   five_hour: { source: icon('5', 8), alt: '5 часов' },
