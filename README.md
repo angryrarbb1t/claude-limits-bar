@@ -29,7 +29,15 @@ claude plugin marketplace add volodyatoxic/claude-limits-bar && claude plugin in
 
 Полоски появятся после первого ответа Claude в новой сессии.
 
-## Обновить
+## Автообновление
+
+По умолчанию сторонние плагины сами не обновляются. Включи один раз — и Claude Code будет подтягивать новую версию при каждом запуске:
+
+1. Запусти в терминале `claude`.
+2. Набери `/plugin`, открой вкладку **Marketplaces**.
+3. Выбери **claude-limits-bar** → **Enable auto-update**.
+
+## Обновить вручную
 
 ```bash
 claude plugin marketplace update claude-limits-bar && claude plugin update limits-bar@claude-limits-bar
