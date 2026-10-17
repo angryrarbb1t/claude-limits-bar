@@ -28,7 +28,7 @@ claude plugin marketplace add volodyatoxic/claude-limits-bar && claude plugin in
 
 Без терминала, в десктоп-приложении: нажми **+** рядом с полем ввода → **Plugins** → **Add marketplace** → `volodyatoxic/claude-limits-bar` → **Add plugin**.
 
-Полоски появятся после первого ответа Claude в новой сессии.
+Сразу после установки полоски появятся после первого ответа Claude: лимиты Claude Code узнаёт из ответа модели. Дальше плагин запоминает последние показания и показывает их в любом открытом чате сразу, а после ответа обновляет.
 
 ## Настройки
 

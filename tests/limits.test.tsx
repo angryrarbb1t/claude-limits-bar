@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, left, readConfig, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -194,3 +194,60 @@ for (const isOn of [true, false]) {
     },
   )
 }
+
+test('restore saved readings', async () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const saved = {
+    list: [
+      { kind: 'five_hour', percentUsed: 40, resetsAt: iso(NOW + 2 * 3600_000) },
+      { kind: 'seven_day', percentUsed: 30, resetsAt: iso(NOW + 3 * DAY) },
+    ],
+  }
+  // Окна ещё не сбросились — как было.
+  expect(restore(saved, NOW)).toEqual(saved.list)
+  // Прошло 4 дня: 5 часов и неделя сбросились; неделя — с нуля до следующего сброса.
+  const later = restore(saved, NOW + 4 * DAY)
+  expect(later[0]).toEqual({ kind: 'five_hour', percentUsed: 0 })
+  expect(later[1]).toEqual({ kind: 'seven_day', percentUsed: 0, resetsAt: iso(NOW + 10 * DAY) })
+  // Мусор в хранилище — ничего.
+  expect(restore(null, NOW)).toEqual([])
+  expect(restore({ list: [{ kind: 1 }] }, NOW)).toEqual([])
+})
+
+test('a new session shows saved readings before the first answer', async ($, on) => {
+  const clock = mock.clock(on)
+  const iso = (ms: number) => new Date(ms).toISOString()
+  mock.store(on, {
+    last: {
+      list: [
+        { kind: 'five_hour', percentUsed: 62, resetsAt: iso(clock.now() + 3 * 3600_000) },
+        { kind: 'seven_day', percentUsed: 30, resetsAt: iso(clock.now() + 4 * DAY) },
+      ],
+    },
+  })
+  const toasts: string[] = []
+  on('ui.toast', ($, e) => {
+    toasts.push(e.text)
+    return { value: undefined }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } as never }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  const desk = await $.ui.mount({ plugin: 'limits-bar', surface: 'desktop', ...BAND })
+  expect(await desk.find({ text: '3:00' })).toBeDefined()
+  expect(await desk.find({ text: '4d' })).toBeDefined()
+
+  // Первое настоящее измерение не выдаётся за переход порога.
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 64, resetsAt: iso(clock.now() + 3 * 3600_000) },
+      { kind: 'seven_day', percentUsed: 31, resetsAt: iso(clock.now() + 4 * DAY) },
+    ],
+    changed: ['rateLimits'],
+  })
+  expect(toasts).toEqual([])
+  await desk.unmount()
+})

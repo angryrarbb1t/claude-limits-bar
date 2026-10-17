@@ -12,6 +12,9 @@ const seam = atom({ plugin: 'limits-bar', key: 'seam' } as const, 'none')
 const flash = atom({ plugin: 'limits-bar', key: 'flash' } as const, {})
 
 const RATIO_KEY = 'ratio'
+// Последние показания лимитов: Claude Code узнаёт их только из ответа модели,
+// поэтому до первого ответа в новой сессии показываем сохранённые.
+const LAST_KEY = 'last'
 const clampRatio = (value: number) => Math.max(0.2, Math.min(0.8, value))
 
 // Временно: показать под виджетом все варианты отрисовки.
@@ -239,10 +242,28 @@ const demoLimits = (d: (typeof DEMO)[number], nowMs: number): Limit[] => [
   { kind: 'seven_day', percentUsed: d.week, resetsAt: new Date(nowMs + (1 - d.elapsed) * WEEK_MS).toISOString() },
 ]
 
+// Сохранённые показания на момент nowMs: окно, которое успело сброситься, — с нуля.
+// Неделя сбрасывается по расписанию, поэтому её следующий сброс известен; у 5 часов — нет.
+export const restore = (saved: unknown, nowMs: number): Limit[] => {
+  const list = (saved as { list?: unknown } | null)?.list
+  if (!Array.isArray(list)) return []
+
+  return list.flatMap((raw): Limit[] => {
+    const one = raw as Partial<Limit>
+    if (typeof one.kind !== 'string' || typeof one.percentUsed !== 'number') return []
+    const at = one.resetsAt ? Date.parse(one.resetsAt) : Number.NaN
+    if (Number.isNaN(at) || at > nowMs) return [{ kind: one.kind, percentUsed: one.percentUsed, resetsAt: one.resetsAt }]
+    if (one.kind !== 'seven_day') return [{ kind: one.kind, percentUsed: 0 }]
+    const next = at + (Math.floor((nowMs - at) / WEEK_MS) + 1) * WEEK_MS
+
+    return [{ kind: one.kind, percentUsed: 0, resetsAt: new Date(next).toISOString() }]
+  })
+}
+
 async function save($: EngineInterface, list: readonly Limit[]) {
-  await update($, windows, () =>
-    list.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt })),
-  )
+  const clean = list.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
+  await update($, windows, () => clean)
+  if (clean.length > 0) await $.store.set(LAST_KEY, { list: clean })
 }
 
 async function tick($: EngineInterface) {
@@ -269,6 +290,8 @@ async function announce($: EngineInterface, cfg: Config, before: readonly Limit[
 
 export const register: Register = (on, options) => {
   const cfg = readConfig(options)
+  // Показания восстановлены из сохранённых: первое настоящее измерение — не «переход порога».
+  let isRestored = false
 
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
@@ -279,7 +302,15 @@ export const register: Register = (on, options) => {
     if (Number.isFinite(saved) && saved > 0) await update($, ratio, () => clampRatio(saved))
 
     const usage = await $.session.usage().catch(() => null)
-    if (usage) await save($, usage.rateLimits)
+    if (usage && usage.rateLimits.length > 0) {
+      await save($, usage.rateLimits)
+    } else {
+      const restored = restore(await $.store.get(LAST_KEY), await $.clock.now())
+      if (restored.length > 0) {
+        isRestored = true
+        await update($, windows, () => restored)
+      }
+    }
 
     return ran
   })
@@ -290,7 +321,8 @@ export const register: Register = (on, options) => {
       const before = pick(await read($, windows))
       await save($, e.rateLimits)
       await update($, now, () => nowMs)
-      if (before.length > 0) await announce($, cfg, before, pick(e.rateLimits), nowMs)
+      if (before.length > 0 && !isRestored) await announce($, cfg, before, pick(e.rateLimits), nowMs)
+      isRestored = false
     }
 
     return next(e)
