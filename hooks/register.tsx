@@ -1,41 +1,93 @@
 import { atom, read, update } from 'claude-code'
-import type { EngineInterface, Register } from 'claude-code'
+import type { EngineInterface, PluginOptions, Register } from 'claude-code'
 
 import type { Limit } from '../types'
 
 const windows = atom({ plugin: 'limits-bar', key: 'windows' } as const, [])
 const now = atom({ plugin: 'limits-bar', key: 'now' } as const, 0)
 const ratio = atom({ plugin: 'limits-bar', key: 'ratio' } as const, 0.5)
-const isHover = atom({ plugin: 'limits-bar', key: 'isHover' } as const, false)
+// Сепаратор у стыка: none — скрыт, near — курсор рядом, drag — тянут (рисует слой мыши).
+const seam = atom({ plugin: 'limits-bar', key: 'seam' } as const, 'none')
+// Какие полоски сейчас анимируют переход порога: kind → до какого момента (мс).
+const flash = atom({ plugin: 'limits-bar', key: 'flash' } as const, {})
 
 const RATIO_KEY = 'ratio'
 const clampRatio = (value: number) => Math.max(0.2, Math.min(0.8, value))
 
+// Временно: показать под виджетом все варианты отрисовки.
+const SHOW_DEMO = false
+
 const KINDS = ['five_hour', 'seven_day']
 const TIME_CELLS = 5
+const WEEK_MS = 7 * 24 * 60 * 60 * 1000
+const FLASH_MS = 2600
 
-// Синий и серая дорожка — как в меню «Использование» приложения.
-const BLUE = '#2f7de1'
-const ORANGE = '#f59e0b'
-const RED = '#e5484d'
+export const BAR_PX = 5
+// Зазор между сегментами, как в индикаторе контекста приложения.
+const GAP_PX = 2
+// Промежуток между половинами в клетках: время · сепаратор · следующая полоска.
+const SEP_CELLS = 0.5
+const SEP_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="1" height="12">' +
+  '<style>.s{fill:#cfcfcb}@media (prefers-color-scheme:dark){.s{fill:#4a4a48}}</style>' +
+  '<rect class="s" width="1" height="12"/></svg>'
+
+// Пиктограммы окон: серое кольцо цвета дорожки и подпись внутри.
+const ICON_PX = 15
+const icon = (label: string, size: number) =>
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
+  `<style>.r{fill:none;stroke:#e3e3e3}.l{fill:#8e8e8a;font:500 ${size}px -apple-system,system-ui,sans-serif}` +
+  '@media (prefers-color-scheme:dark){.r{stroke:#3a3a3a}.l{fill:#8a8a86}}</style>' +
+  '<circle class="r" cx="8" cy="8" r="6.6" stroke-width="1.6"/>' +
+  `<text class="l" x="8" y="10.9" text-anchor="middle">${label}</text></svg>`
+export const ICONS: Record<string, { source: string; alt: string }> = {
+  five_hour: { source: icon('5', 8), alt: '5 часов' },
+  seven_day: { source: icon('W', 7.5), alt: 'Неделя' },
+}
+
+// Цвета — как в меню «Использование» и индикаторе контекста.
+const STYLE =
+  '.ok{fill:#2f7de1}.warn{fill:#f59e0b}.hot{fill:#e5484d}.pace{fill:#bdbdb8}.track{fill:#e3e3e3}' +
+  '@media (prefers-color-scheme:dark){.pace{fill:#6b6b68}.track{fill:#3a3a3a}}'
 
 export type Tone = 'ok' | 'warn' | 'hot'
-const FILL: Record<Tone, string> = { ok: BLUE, warn: ORANGE, hot: RED }
+export type Part = Tone | 'pace' | 'track'
+export type Segment = { from: number; to: number; part: Part }
+export type Anim = 'once' | 'loop'
+
 const TERMINAL: Record<Tone, string> = { ok: 'suggestion', warn: 'warning', hot: 'error' }
+const RANK: Record<Tone, number> = { ok: 0, warn: 1, hot: 2 }
+const isTone = (part: Part): part is Tone => part === 'ok' || part === 'warn' || part === 'hot'
+
+// Настройки плагина (userConfig в plugin.json).
+export type Config = {
+  sessionWarn: number
+  sessionHot: number
+  weekOver: number
+  animation: boolean
+  notify: boolean
+}
+export const DEFAULTS: Config = { sessionWarn: 60, sessionHot: 75, weekOver: 15, animation: true, notify: true }
+
+const num = (value: unknown, fallback: number) =>
+  typeof value === 'number' && Number.isFinite(value) ? value : fallback
+const flag = (value: unknown, fallback: boolean) => (typeof value === 'boolean' ? value : fallback)
+
+export const readConfig = (options: PluginOptions): Config => ({
+  sessionWarn: num(options.sessionWarn, DEFAULTS.sessionWarn),
+  sessionHot: num(options.sessionHot, DEFAULTS.sessionHot),
+  weekOver: num(options.weekOver, DEFAULTS.weekOver),
+  animation: flag(options.animation, DEFAULTS.animation),
+  notify: flag(options.notify, DEFAULTS.notify),
+})
 
 // 5 часов: просто по порогам.
-export const sessionTone = (pct: number): Tone => (pct >= 75 ? 'hot' : pct >= 60 ? 'warn' : 'ok')
+export const sessionTone = (pct: number, cfg: Config = DEFAULTS): Tone =>
+  pct >= cfg.sessionHot ? 'hot' : pct >= cfg.sessionWarn ? 'warn' : 'ok'
 
-// Неделя: по темпу. Подкрашиваем, только когда расход обгоняет прошедшую
-// долю недели на AHEAD_PP процентных пунктов и больше; красный — если при
-// этом съедено 80% и больше. Ровный расход остаётся синим.
-export const AHEAD_PP = 15
-export const weekTone = (pct: number, elapsed: number | undefined): Tone => {
-  if (elapsed === undefined) return pct >= 80 ? 'hot' : 'ok'
-  if (pct - elapsed * 100 < AHEAD_PP) return 'ok'
-
-  return pct >= 80 ? 'hot' : 'warn'
-}
+// Перерасход недели: до weekOver п.п. — оранжевый, дальше или с 80% — красный.
+export const overTone = (pct: number, elapsed: number, cfg: Config = DEFAULTS): Tone =>
+  pct - elapsed * 100 >= cfg.weekOver || pct >= 80 ? 'hot' : 'warn'
 
 // До сброса: «4:16», а от суток — «5d».
 export const left = (resetsAt: string | undefined, nowMs: number) => {
@@ -48,9 +100,6 @@ export const left = (resetsAt: string | undefined, nowMs: number) => {
   return `${Math.floor(mins / 60)}:${String(mins % 60).padStart(2, '0')}`
 }
 
-export const BAR_PX = 5
-const WEEK_MS = 7 * 24 * 60 * 60 * 1000
-
 // Какая доля недели уже прошла, 0..1.
 export const weekElapsed = (resetsAt: string | undefined, nowMs: number) => {
   if (!resetsAt) return undefined
@@ -60,50 +109,134 @@ export const weekElapsed = (resetsAt: string | undefined, nowMs: number) => {
   return Math.max(0, Math.min(1, 1 - (at - nowMs) / WEEK_MS))
 }
 
-// Svg без ширины сжимается до слота, высота задана явно. Ширину холста
-// подгоняем под примерную ширину полосы, чтобы скругления не вытягивались.
-const svg = (w: number, body: string, style = '') =>
-  `<svg xmlns="http://www.w3.org/2000/svg" width="${w}" height="${BAR_PX}" viewBox="0 0 ${w} ${BAR_PX}" preserveAspectRatio="none">` +
-  (style ? `<style>${style}</style>` : '') +
-  body +
-  `</svg>`
+const clamp01 = (value: number) => Math.max(0, Math.min(1, value))
 
-const canvas = (approxPx: number) => Math.max(60, Math.round(approxPx))
+// Сегменты полоски слева направо, доли 0..1. Неделя: если неделя впереди —
+// синий расход, затем серая отметка недели; если расход впереди — синий до
+// отметки недели, затем перерасход.
+export const segments = (one: Limit, nowMs: number, cfg: Config = DEFAULTS): Segment[] => {
+  const used = clamp01(one.percentUsed / 100)
+  const elapsed = one.kind === 'seven_day' ? weekElapsed(one.resetsAt, nowMs) : undefined
+  let parts: Segment[]
 
-// pace — доля прошедшей недели (по наведению). Опережает расход: слой под
-// синим, виден только правее него. Отстаёт: слой поверх синего.
-export const barSvg = (pct: number, approxPx = 350, pace?: number, tone: Tone = 'ok') => {
-  const w = canvas(approxPx)
+  if (elapsed === undefined) {
+    const tone: Tone =
+      one.kind === 'seven_day' ? (one.percentUsed >= 80 ? 'hot' : 'ok') : sessionTone(one.percentUsed, cfg)
+    parts = [{ from: 0, to: used, part: tone }]
+  } else if (used <= elapsed) {
+    parts = [
+      { from: 0, to: used, part: 'ok' },
+      { from: used, to: elapsed, part: 'pace' },
+    ]
+  } else {
+    parts = [
+      { from: 0, to: elapsed, part: 'ok' },
+      { from: elapsed, to: used, part: overTone(one.percentUsed, elapsed, cfg) },
+    ]
+  }
+
+  const end = Math.max(0, ...parts.map(p => p.to))
+  parts.push({ from: end, to: 1, part: 'track' })
+
+  return parts.filter(p => p.to - p.from > 0.004)
+}
+
+// Самый тревожный цвет полоски: по нему ловим переход порога.
+export const barTone = (one: Limit, nowMs: number, cfg: Config = DEFAULTS): Tone =>
+  segments(one, nowMs, cfg).reduce<Tone>(
+    (worst, p) => (isTone(p.part) && RANK[p.part] > RANK[worst] ? p.part : worst),
+    'ok',
+  )
+
+// Блик пробегает по цветной части, оранжевый и красный сегменты мягко пульсируют.
+// once — дважды при переходе порога; loop — по кругу (для демо).
+const animation = (coloredPx: number, anim: Anim) => {
+  const sw = Math.max(24, coloredPx * 0.35)
+  const travel = (coloredPx + sw).toFixed(1)
+  const [dur, count, end] = anim === 'once' ? ['1.2s', '2', 100] : ['3.2s', 'infinite', 38]
+  const style =
+    `.sh{animation:sh ${dur} ease-in-out ${count}}.hl{animation:pu ${dur} ease-in-out ${count}}` +
+    `@keyframes sh{0%{transform:translateX(0)}${end}%{transform:translateX(${travel}px)}100%{transform:translateX(${travel}px)}}` +
+    `@keyframes pu{0%{opacity:1}${end / 2}%{opacity:.55}${end}%{opacity:1}100%{opacity:1}}` +
+    '@media (prefers-reduced-motion:reduce){.sh,.hl{animation:none}}'
+  const markup =
+    '<defs><linearGradient id="g" x1="0" x2="1">' +
+    '<stop offset="0" stop-color="#fff" stop-opacity="0"/>' +
+    '<stop offset=".5" stop-color="#fff" stop-opacity=".7"/>' +
+    '<stop offset="1" stop-color="#fff" stop-opacity="0"/></linearGradient>' +
+    `<clipPath id="f"><rect width="${coloredPx.toFixed(1)}" height="${BAR_PX}" rx="${BAR_PX / 2}"/></clipPath></defs>` +
+    `<g clip-path="url(#f)"><rect class="sh" x="${(-sw).toFixed(1)}" width="${sw.toFixed(1)}" height="${BAR_PX}" fill="url(#g)"/></g>`
+
+  return { style, markup }
+}
+
+// Svg без ширины ужимается до слота: широкий холст всегда заполняет слот целиком.
+// Система координат — примерная ширина в пикселях, чтобы скругления и зазоры
+// растягивались как можно меньше.
+export const barSvg = (parts: readonly Segment[], approxPx = 350, anim?: Anim) => {
+  const w = Math.max(60, Math.round(approxPx))
   const r = BAR_PX / 2
-  const used = Math.min(100, Math.max(0, pct)) / 100
-  const fill = pct > 0 ? Math.max(BAR_PX, used * w) : 0
-  const color = FILL[tone]
-  const shade =
-    pace !== undefined && pace > 0
-      ? `<rect class="p" width="${(Math.min(1, pace) * w).toFixed(1)}" height="${BAR_PX}" rx="${r}"/>`
-      : ''
-  const isAhead = pace !== undefined && pace > used
+  // Последний цветной сегмент перед дорожкой закругляет свой правый конец.
+  let lastColored = -1
+  parts.forEach((p, i) => {
+    if (p.part !== 'track') lastColored = i
+  })
+  const coloredPx = Math.max(0, ...parts.filter(p => isTone(p.part)).map(p => p.to)) * w
+  const fx = anim && coloredPx > 0 ? animation(coloredPx, anim) : undefined
 
-  return svg(
-    w,
-    `<rect class="t" width="${w}" height="${BAR_PX}" rx="${r}"/>` +
-      (isAhead ? shade : '') +
-      (fill > 0 ? `<rect width="${fill.toFixed(1)}" height="${BAR_PX}" rx="${r}" fill="${color}"/>` : '') +
-      (isAhead ? '' : shade),
-    '.t{fill:#e3e3e3}.p{fill:#000;fill-opacity:.15}' +
-      '@media (prefers-color-scheme:dark){.t{fill:#3a3a3a}.p{fill:#fff;fill-opacity:.15}}',
+  const rects = parts.map((p, i) => {
+    const x = p.from * w + (i > 0 ? GAP_PX / 2 : 0)
+    const width = (p.to - p.from) * w - (i > 0 ? GAP_PX / 2 : 0) - (i < parts.length - 1 ? GAP_PX / 2 : 0)
+    if (width <= 0) return ''
+    const cls = fx && (p.part === 'warn' || p.part === 'hot') ? `${p.part} hl` : p.part
+    const at = `class="${cls}" x="${x.toFixed(1)}" height="${BAR_PX}"`
+    if (i !== lastColored) return `<rect ${at} width="${width.toFixed(1)}"/>`
+
+    // Скруглённый прямоугольник, а левая половина — прямая, если слева есть сосед.
+    return (
+      `<rect ${at} width="${width.toFixed(1)}" rx="${r}"/>` +
+      (i > 0 ? `<rect ${at} width="${Math.min(width, Math.max(r, width / 2)).toFixed(1)}"/>` : '')
+    )
+  })
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${BAR_PX}" viewBox="0 0 ${w} ${BAR_PX}" preserveAspectRatio="none">` +
+    `<style>${STYLE}${fx?.style ?? ''}</style>` +
+    `<clipPath id="c"><rect width="${w}" height="${BAR_PX}" rx="${BAR_PX / 2}"/></clipPath>` +
+    `<g clip-path="url(#c)">${rects.join('')}${fx?.markup ?? ''}</g>` +
+    `</svg>`
   )
 }
 
-const toneOf = (one: Limit, nowMs: number) =>
-  one.kind === 'seven_day'
-    ? weekTone(one.percentUsed, weekElapsed(one.resetsAt, nowMs))
-    : sessionTone(one.percentUsed)
+// Текст уведомления о переходе порога.
+export const notice = (one: Limit, tone: Tone) => {
+  const pct = Math.round(one.percentUsed)
+  if (one.kind === 'five_hour') return `Сессия: ${pct}% — ${tone === 'hot' ? 'красная' : 'оранжевая'} зона`
+
+  return tone === 'hot' ? `Неделя: ${pct}% — сильный перерасход` : `Неделя: ${pct}% — расход обгоняет неделю`
+}
 
 const pick = (list: readonly Limit[]) =>
   KINDS.map(kind => list.find(one => one.kind === kind)).filter(
     (one): one is Limit => one !== undefined,
   )
+
+// Демо-варианты: проценты, сколько осталось до сброса 5 часов и какая доля недели прошла.
+const DEMO = [
+  { label: 'спокойно', five: 25, fiveLeftH: 3, week: 20, elapsed: 0.45 },
+  { label: 'ровно', five: 55, fiveLeftH: 2.5, week: 44, elapsed: 0.45 },
+  { label: 'чуть быстрее', five: 62, fiveLeftH: 2, week: 52, elapsed: 0.45 },
+  { label: 'перерасход', five: 76, fiveLeftH: 1.5, week: 70, elapsed: 0.45 },
+  { label: '80%+', five: 90, fiveLeftH: 1, week: 85, elapsed: 0.7 },
+  { label: 'конец недели', five: 10, fiveLeftH: 4.5, week: 92, elapsed: 0.97 },
+  { label: 'после сброса', five: 0, fiveLeftH: 5, week: 2, elapsed: 0.01 },
+  { label: 'всё съедено', five: 100, fiveLeftH: 0.3, week: 100, elapsed: 0.8 },
+]
+
+const demoLimits = (d: (typeof DEMO)[number], nowMs: number): Limit[] => [
+  { kind: 'five_hour', percentUsed: d.five, resetsAt: new Date(nowMs + d.fiveLeftH * 3600_000).toISOString() },
+  { kind: 'seven_day', percentUsed: d.week, resetsAt: new Date(nowMs + (1 - d.elapsed) * WEEK_MS).toISOString() },
+]
 
 async function save($: EngineInterface, list: readonly Limit[]) {
   await update($, windows, () =>
@@ -116,7 +249,26 @@ async function tick($: EngineInterface) {
   await update($, now, () => ms)
 }
 
-export const register: Register = on => {
+// Полоски, у которых цвет стал тревожнее: анимация и уведомление.
+async function announce($: EngineInterface, cfg: Config, before: readonly Limit[], after: readonly Limit[], nowMs: number) {
+  const rose = after.filter(one => {
+    const was = before.find(b => b.kind === one.kind)
+
+    return was !== undefined && RANK[barTone(one, nowMs, cfg)] > RANK[barTone(was, nowMs, cfg)]
+  })
+  if (rose.length === 0) return
+
+  if (cfg.animation) {
+    const until = nowMs + FLASH_MS
+    await update($, flash, current => ({ ...current, ...Object.fromEntries(rose.map(one => [one.kind, until])) }))
+    $.clock.after(FLASH_MS + 100, () => void update($, flash, () => ({})))
+  }
+  if (cfg.notify) for (const one of rose) $.ui.toast(notice(one, barTone(one, nowMs, cfg)))
+}
+
+export const register: Register = (on, options) => {
+  const cfg = readConfig(options)
+
   on('session.start', async ($, e, next) => {
     const ran = await next(e)
     await tick($)
@@ -133,18 +285,21 @@ export const register: Register = on => {
 
   on('session.measure', async ($, e, next) => {
     if (e.changed.includes('rateLimits')) {
+      const nowMs = await $.clock.now()
+      const before = pick(await read($, windows))
       await save($, e.rateLimits)
-      await tick($)
+      await update($, now, () => nowMs)
+      if (before.length > 0) await announce($, cfg, before, pick(e.rateLimits), nowMs)
     }
 
     return next(e)
   })
 
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { hover?: boolean; ratio?: number; isDone?: boolean } | null
-    if (typeof data?.hover === 'boolean') {
-      const hover = data.hover
-      await update($, isHover, () => hover)
+    const data = e.data as { ratio?: number; isDone?: boolean; seam?: string } | null
+    if (data?.seam === 'none' || data?.seam === 'near' || data?.seam === 'drag') {
+      const value = data.seam
+      await update($, seam, () => value)
     }
     if (typeof data?.ratio === 'number') {
       const value = clampRatio(data.ratio)
@@ -167,19 +322,20 @@ export const register: Register = on => {
 
       return (
         <Box gap={2}>
-          {list.map(one => {
-            const filled = Math.round((Math.max(0, Math.min(100, one.percentUsed)) / 100) * cells)
+          {list.map(one => (
+            <Box key={one.kind} gap={1}>
+              <Text>
+                {segments(one, nowMs, cfg).map(p => {
+                  const n = Math.round((p.to - p.from) * cells)
+                  if (p.part === 'track') return <Text dimColor>{'─'.repeat(n)}</Text>
+                  if (p.part === 'pace') return <Text dimColor>{'━'.repeat(n)}</Text>
 
-            return (
-              <Box key={one.kind} gap={1}>
-                <Text>
-                  <Text color={TERMINAL[toneOf(one, nowMs)]}>{'━'.repeat(filled)}</Text>
-                  <Text dimColor>{'─'.repeat(cells - filled)}</Text>
-                </Text>
-                <Text dimColor>{left(one.resetsAt, nowMs).padStart(TIME_CELLS)}</Text>
-              </Box>
-            )
-          })}
+                  return <Text color={TERMINAL[p.part]}>{'━'.repeat(n)}</Text>
+                })}
+              </Text>
+              <Text dimColor>{left(one.resetsAt, nowMs).padStart(TIME_CELLS)}</Text>
+            </Box>
+          ))}
         </Box>
       )
     }
@@ -187,45 +343,86 @@ export const register: Register = on => {
     if (e.surface !== 'desktop') return next(e)
     const { Box, Client, Svg, Text } = $.ui.resolve(e)
     const share = await read($, ratio)
-    const hover = await read($, isHover)
-    // Примерно 8px на клетку, минус время и промежутки.
-    const totalPx = e.props.bodyColumns * 8 - 2 * 32 - 24
+    const isSeamShown = (await read($, seam)) === 'near'
+    const flashes: Record<string, number> = await read($, flash)
+    const clockMs = await $.clock.now()
     const leftPct = Math.round(share * 100)
+    const labelCells = SHOW_DEMO ? 13 : 0
+    // Примерно 8px на клетку, минус пиктограммы, время, подписи и промежутки.
+    const totalPx = (e.props.bodyColumns - labelCells) * 8 - 2 * (32 + ICON_PX + 6) - 24
+
+    const halves = (rows: readonly Limit[], how: { hasSeam?: boolean; isDemo?: boolean } = {}) =>
+      rows.map((one, i) => {
+        const isFirst = i === 0 && rows.length > 1
+        const part = one.kind === 'five_hour' ? share : 1 - share
+        const name = one.kind === 'five_hour' ? 'Сессия' : 'Неделя'
+        const width = rows.length === 1 ? '100%' : `${one.kind === 'five_hour' ? leftPct : 100 - leftPct}%`
+        const parts = segments(one, nowMs, cfg)
+        const ico = ICONS[one.kind]
+        const isFlashing = (flashes[one.kind] ?? 0) > clockMs
+        const anim: Anim | undefined = !cfg.animation
+          ? undefined
+          : how.isDemo
+            ? parts.some(p => p.part === 'warn' || p.part === 'hot')
+              ? 'loop'
+              : undefined
+            : isFlashing
+              ? 'once'
+              : undefined
+
+        return (
+          <Box key={one.kind} width={width} alignItems="center" gap={0.5} paddingLeft={i > 0 ? SEP_CELLS : 0}>
+            {ico && (
+              <Box flexShrink={0}>
+                <Svg source={ico.source} width={ICON_PX} height={ICON_PX} alt={ico.alt} />
+              </Box>
+            )}
+            <Box flexGrow={1} flexShrink={1} minWidth={0}>
+              <Svg
+                source={barSvg(parts, totalPx * part, anim)}
+                height={BAR_PX}
+                alt={`${name}: ${Math.round(one.percentUsed)}%`}
+              />
+            </Box>
+            <Box flexShrink={0}>
+              <Text dimColor>{left(one.resetsAt, nowMs)}</Text>
+            </Box>
+            {isFirst && (
+              <Box width={SEP_CELLS} flexShrink={0} justifyContent="center" alignItems="center">
+                {how.hasSeam && isSeamShown && <Svg source={SEP_SVG} width={1} height={12} alt="Стык" />}
+              </Box>
+            )}
+          </Box>
+        )
+      })
+
+    const label = (text: string) =>
+      SHOW_DEMO ? (
+        <Box width={labelCells} flexShrink={0}>
+          <Text dimColor>{text}</Text>
+        </Box>
+      ) : null
 
     return (
-      <Box position="relative">
-        {list.map((one, i) => {
-          const part = one.kind === 'five_hour' ? share : 1 - share
-          const barPx = totalPx * part
-          const elapsed = one.kind === 'seven_day' ? weekElapsed(one.resetsAt, nowMs) : undefined
-          const name = one.kind === 'five_hour' ? 'Сессия' : 'Неделя'
-          const width =
-            list.length === 1 ? '100%' : `${one.kind === 'five_hour' ? leftPct : 100 - leftPct}%`
-
-          return (
-            <Box
-              key={one.kind}
-              width={width}
-              alignItems="center"
-              gap={0.5}
-              paddingRight={i === 0 && list.length > 1 ? 1.5 : 0}
-            >
-              <Box flexGrow={1} flexShrink={1} minWidth={0}>
-                <Svg
-                  source={barSvg(one.percentUsed, barPx, hover ? elapsed : undefined, toneOf(one, nowMs))}
-                  height={BAR_PX}
-                  alt={`${name}: ${Math.round(one.percentUsed)}%`}
-                />
-              </Box>
-              <Box flexShrink={0}>
-                <Text dimColor>{left(one.resetsAt, nowMs)}</Text>
+      <Box flexDirection="column" gap={0.5}>
+        <Box alignItems="center">
+          {label('сейчас')}
+          <Box position="relative" flexGrow={1} minWidth={0}>
+            {halves(list, { hasSeam: true })}
+            <Box position="absolute" top={0} left={0} right={0} bottom={0}>
+              <Client key="handle" module="./handle.tsx" props={{ ratio: share }} width="100%" height="100%" />
+            </Box>
+          </Box>
+        </Box>
+        {SHOW_DEMO &&
+          DEMO.map(d => (
+            <Box key={d.label} alignItems="center">
+              {label(d.label)}
+              <Box flexGrow={1} minWidth={0}>
+                {halves(demoLimits(d, nowMs), { isDemo: true })}
               </Box>
             </Box>
-          )
-        })}
-        <Box position="absolute" top={0} left={0} right={0} bottom={0}>
-          <Client key="handle" module="./handle.tsx" props={{ ratio: share }} width="100%" height="100%" />
-        </Box>
+          ))}
       </Box>
     )
   })

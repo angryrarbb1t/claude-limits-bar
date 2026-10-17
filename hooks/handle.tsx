@@ -1,58 +1,73 @@
-import type { ClientModule, ClientSurface } from 'claude-code'
+import type { ClientModule, ClientPointerEvent, ClientSurface } from 'claude-code'
 
-// Невидимый слой поверх виджета: наведение и перетаскивание стыка полосок.
-// Шлёт в модуль хуков { hover } и { ratio, isDone }.
+// Невидимый слой поверх виджета: перетаскивание стыка полосок.
+// Пока тянут, сам рисует черту у курсора — сразу, без круга через модуль хуков.
+// В модуль хуков шлёт одним сообщением { seam, ratio, isDone? }:
+// seam — near (курсор у стыка), drag (тянут) или none.
 
 type Props = { ratio: number }
-type Drag = { ratio: number; isDragging: boolean; columns: number }
+type Seam = 'none' | 'near' | 'drag'
+type Drag = { ratio: number; seam: Seam }
 
 const GRAB_CELLS = 2
+// Центр промежутка между половинами: сепаратор шириной 0.5 клетки перед стыком.
+const SEAM_OFFSET = 0.25
 const MIN = 0.2
 const MAX = 0.8
+// Тусклая черта, как бледный разделитель приложения.
+const LINE = '#cfcfcb'
 
-const wired = new WeakSet<object>()
 const drags = new WeakMap<object, Drag>()
 
 export const clamp = (ratio: number) => Math.max(MIN, Math.min(MAX, ratio))
 
-function wire(props: Props, surface: ClientSurface) {
-  drags.set(surface, { ratio: props.ratio, isDragging: false, columns: surface.columns })
-  if (wired.has(surface)) return
-  wired.add(surface)
+const redraw = (surface: ClientSurface<number>) => surface.setState((surface.state ?? 0) + 1)
 
-  surface.onPointer(e => {
-    const drag = drags.get(surface)
-    if (!drag || drag.columns <= 0) return
-    const at = (e.fine?.x ?? e.x + 0.5) / drag.columns
+function onPointer(e: ClientPointerEvent, surface: ClientSurface<number>, drag: Drag) {
+  const columns = surface.columns
+  if (columns <= 0) return
+  const x = e.fine?.x ?? e.x + 0.5
+  const isNear = Math.abs(x - drag.ratio * columns) <= GRAB_CELLS
+  const was = drag.seam
+  let isDone = false
 
-    if (e.type === 'enter') surface.post({ hover: true })
-    if (e.type === 'leave') {
-      surface.post({ hover: false })
-      if (drag.isDragging) {
-        drag.isDragging = false
-        surface.post({ ratio: drag.ratio, isDone: true })
-      }
-    }
-    if (e.type === 'down' && e.button === 'left') {
-      drag.isDragging = Math.abs(e.x - drag.ratio * drag.columns) <= GRAB_CELLS
-    }
-    if (e.type === 'move' && drag.isDragging) {
-      drag.ratio = clamp(at)
-      surface.post({ ratio: drag.ratio })
-    }
-    if (e.type === 'up' && drag.isDragging) {
-      drag.isDragging = false
-      surface.post({ ratio: drag.ratio, isDone: true })
-    }
-  })
+  if (e.type === 'down' && e.button === 'left' && isNear) drag.seam = 'drag'
+  else if (drag.seam === 'drag' && e.type === 'move') drag.ratio = clamp(x / columns)
+  else if (drag.seam === 'drag' && (e.type === 'up' || e.type === 'leave')) isDone = true
+
+  if (drag.seam !== 'drag' || isDone) drag.seam = e.type !== 'leave' && isNear ? 'near' : 'none'
+
+  const isMoving = drag.seam === 'drag' && e.type === 'move'
+  if (was !== drag.seam || isMoving || isDone) {
+    surface.post(isDone ? { seam: drag.seam, ratio: drag.ratio, isDone } : { seam: drag.seam, ratio: drag.ratio })
+    redraw(surface)
+  }
 }
 
-const Handle: ClientModule<Props> = (props, surface) => {
-  const drag = drags.get(surface)
-  if (!drag?.isDragging) wire(props, surface)
-  else drag.columns = surface.columns
+const Handle: ClientModule<Props, number> = (props, surface) => {
+  let drag = drags.get(surface)
+  if (!drag) {
+    const fresh: Drag = { ratio: props.ratio, seam: 'none' }
+    drags.set(surface, fresh)
+    surface.onPointer(e => onPointer(e, surface, fresh))
+    drag = fresh
+  }
+  if (drag.seam !== 'drag') drag.ratio = props.ratio
 
-  return surface.elements.Box({ width: '100%', height: '100%' })
+  const { Box, Text } = surface.elements
+  const isShown = drag.seam === 'drag' && surface.columns > 0
+
+  return (
+    <Box width="100%" height="100%" position="relative">
+      {isShown && (
+        <Box position="absolute" top={0} left={Math.max(0, Math.round(drag.ratio * surface.columns - SEAM_OFFSET))}>
+          <Text key="seam" color={LINE}>
+            │
+          </Text>
+        </Box>
+      )}
+    </Box>
+  )
 }
 
 export default Handle
