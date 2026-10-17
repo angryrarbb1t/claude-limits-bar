@@ -260,10 +260,28 @@ export const restore = (saved: unknown, nowMs: number): Limit[] => {
   })
 }
 
+// Окна для показа на момент nowMs: устаревшие (сброс прошёл) — с нуля; окна 5 часов
+// нет в данных, пока не началось новое (после долгого перерыва), — значит, оно на нуле.
+export const current = (list: readonly Limit[], nowMs: number): Limit[] => {
+  const fresh = pick(restore({ list }, nowMs))
+  if (fresh.length > 0 && !fresh.some(one => one.kind === 'five_hour')) {
+    return [{ kind: 'five_hour', percentUsed: 0 }, ...fresh]
+  }
+
+  return fresh
+}
+
+// Свежие показания; окна, которого в них нет, берём из сохранённых.
 async function save($: EngineInterface, list: readonly Limit[]) {
   const clean = list.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
-  await update($, windows, () => clean)
-  if (clean.length > 0) await $.store.set(LAST_KEY, { list: clean })
+  if (clean.length === 0) return
+  const stored = restore(await $.store.get(LAST_KEY), await $.clock.now())
+  const merged = KINDS.flatMap(kind => {
+    const one = clean.find(c => c.kind === kind) ?? stored.find(c => c.kind === kind)
+    return one ? [one] : []
+  })
+  await update($, windows, () => merged)
+  await $.store.set(LAST_KEY, { list: merged })
 }
 
 async function tick($: EngineInterface) {
@@ -345,9 +363,9 @@ export const register: Register = (on, options) => {
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     if (e.props.hasSurvey) return next(e)
-    const list = pick(await read($, windows))
-    if (list.length === 0) return next(e)
     const nowMs = (await read($, now)) || (await $.clock.now())
+    const list = current(await read($, windows), nowMs)
+    if (list.length === 0) return next(e)
 
     if (e.surface === 'terminal') {
       const { Box, Text } = $.ui.resolve(e)

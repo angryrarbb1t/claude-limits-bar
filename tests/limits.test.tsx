@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, current, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -249,5 +249,47 @@ test('a new session shows saved readings before the first answer', async ($, on)
     changed: ['rateLimits'],
   })
   expect(toasts).toEqual([])
+  await desk.unmount()
+})
+
+test('current windows: session always shown, stale readings reset', async () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  // Окна 5 часов нет в данных (после долгого перерыва) — показываем его на нуле.
+  const weekOnly = current([{ kind: 'seven_day', percentUsed: 20, resetsAt: iso(NOW + 5 * DAY) }], NOW)
+  expect(weekOnly.map(one => `${one.kind}:${one.percentUsed}`)).toEqual(['five_hour:0', 'seven_day:20'])
+  // Мак спал: сброс 5 часов прошёл — 0% и без времени; неделя — как была.
+  const slept = current(
+    [
+      { kind: 'five_hour', percentUsed: 80, resetsAt: iso(NOW - 3600_000) },
+      { kind: 'seven_day', percentUsed: 20, resetsAt: iso(NOW + 5 * DAY) },
+    ],
+    NOW,
+  )
+  expect(slept[0]).toEqual({ kind: 'five_hour', percentUsed: 0 })
+  expect(slept[1]?.percentUsed).toBe(20)
+  // Данных нет совсем — ничего не рисуем.
+  expect(current([], NOW)).toEqual([])
+})
+
+test('a reading without the session window keeps both halves', async ($, on) => {
+  const clock = mock.clock(on)
+  mock.store(on)
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const measure = (rateLimits: { kind: string; percentUsed: number; resetsAt?: string }[]) =>
+    $.session.measure({ context: { window: 200000 }, rateLimits, changed: ['rateLimits'] })
+
+  await measure([
+    { kind: 'five_hour', percentUsed: 40, resetsAt: iso(clock.now() + 2 * 3600_000) },
+    { kind: 'seven_day', percentUsed: 20, resetsAt: iso(clock.now() + 5 * DAY) },
+  ])
+  // Следующее измерение — только неделя: 5 часов берём из сохранённого.
+  await measure([{ kind: 'seven_day', percentUsed: 21, resetsAt: iso(clock.now() + 5 * DAY) }])
+
+  const desk = await $.ui.mount({ plugin: 'limits-bar', surface: 'desktop', ...BAND })
+  const drawn = JSON.stringify(await desk.drawn())
+  expect(drawn).toContain('Сессия: 40%')
+  expect(drawn).toContain('Неделя: 21%')
+  expect(await desk.find({ text: '2:00' })).toBeDefined()
   await desk.unmount()
 })
