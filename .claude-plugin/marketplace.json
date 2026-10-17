@@ -1,0 +1,5 @@
+{
+  "name": "claude-limits-bar",
+  "owner": { "name": "Volodya" },
+  "plugins": [{ "name": "limits-bar", "source": "./" }]
+}
