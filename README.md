@@ -17,23 +17,23 @@
 
 ## Установка
 
-В терминале, в сессии `claude`:
-
-```
-/plugin install limits-bar --marketplace volodyatoxic/claude-limits-bar
-```
-
-Или из обычной командной строки:
+Одна команда в терминале (Терминал на Mac, любая оболочка):
 
 ```bash
-claude plugin install limits-bar --marketplace volodyatoxic/claude-limits-bar
+claude plugin marketplace add volodyatoxic/claude-limits-bar && claude plugin install limits-bar@claude-limits-bar
 ```
 
-Claude спросит `Add marketplace?` — ответь `y`, затем выбери область `user` (Enter). После этого мод работает во всех сессиях, в том числе в десктоп-приложении.
+Без вопросов: ставится для пользователя и работает во всех новых сессиях — и в терминальном `claude`, и в десктоп-приложении.
 
-В десктоп-приложении (там `/plugin` не работает): нажми **+** рядом с полем ввода → **Plugins** → **Add marketplace** → `volodyatoxic/claude-limits-bar` → **Add plugin**.
+Без терминала, в десктоп-приложении: нажми **+** рядом с полем ввода → **Plugins** → **Add marketplace** → `volodyatoxic/claude-limits-bar` → **Add plugin**.
 
 Полоски появятся после первого ответа Claude в новой сессии.
+
+## Обновить
+
+```bash
+claude plugin marketplace update claude-limits-bar && claude plugin update limits-bar@claude-limits-bar
+```
 
 ## Удалить
 
