@@ -32,13 +32,14 @@ const SEP_SVG =
   '<style>.s{fill:#cfcfcb}@media (prefers-color-scheme:dark){.s{fill:#4a4a48}}</style>' +
   '<rect class="s" width="1" height="12"/></svg>'
 
-// Пиктограммы окон: серое кольцо цвета дорожки и подпись внутри.
+// Пиктограммы окон: кольцо и подпись цвета текста времени (#898781 — снято
+// со скриншота приложения; для тёмной темы — близкий оттенок).
 const ICON_PX = 15
 const icon = (label: string, size: number) =>
   '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
-  `<style>.r{fill:none;stroke:#e3e3e3}.l{fill:#8e8e8a;font:500 ${size}px -apple-system,system-ui,sans-serif}` +
-  '@media (prefers-color-scheme:dark){.r{stroke:#3a3a3a}.l{fill:#8a8a86}}</style>' +
-  '<circle class="r" cx="8" cy="8" r="6.6" stroke-width="1.6"/>' +
+  `<style>.r{fill:none;stroke:#898781}.l{fill:#898781;font:500 ${size}px -apple-system,system-ui,sans-serif}` +
+  '@media (prefers-color-scheme:dark){.r{stroke:#9a9893}.l{fill:#9a9893}}</style>' +
+  '<circle class="r" cx="8" cy="8" r="6.5" stroke-width="2"/>' +
   `<text class="l" x="8" y="10.9" text-anchor="middle">${label}</text></svg>`
 export const ICONS: Record<string, { source: string; alt: string }> = {
   five_hour: { source: icon('5', 8), alt: '5 часов' },
