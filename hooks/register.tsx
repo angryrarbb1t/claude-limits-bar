@@ -24,6 +24,8 @@ const KINDS = ['five_hour', 'seven_day']
 const TIME_CELLS = 5
 const WEEK_MS = 7 * 24 * 60 * 60 * 1000
 const FLASH_MS = 2600
+// Как часто чат сверяется с показаниями других чатов.
+const SYNC_MS = 15_000
 
 export const BAR_PX = 5
 // Зазор между сегментами, как в индикаторе контекста приложения.
@@ -271,17 +273,42 @@ export const current = (list: readonly Limit[], nowMs: number): Limit[] => {
   return fresh
 }
 
-// Свежие показания; окна, которого в них нет, берём из сохранённых.
-async function save($: EngineInterface, list: readonly Limit[]) {
-  const clean = list.map(({ kind, percentUsed, resetsAt }) => ({ kind, percentUsed, resetsAt }))
-  if (clean.length === 0) return
-  const stored = restore(await $.store.get(LAST_KEY), await $.clock.now())
-  const merged = KINDS.flatMap(kind => {
-    const one = clean.find(c => c.kind === kind) ?? stored.find(c => c.kind === kind)
-    return one ? [one] : []
+// Какое из двух показаний одного окна свежее: у которого сброс позже, а при одном
+// и том же сбросе — у которого расход больше (внутри окна расход только растёт).
+export const fresher = (a: Limit | undefined, b: Limit | undefined) => {
+  if (!a || !b) return a ?? b
+  const ta = a.resetsAt ? Date.parse(a.resetsAt) : 0
+  const tb = b.resetsAt ? Date.parse(b.resetsAt) : 0
+  if (ta !== tb) return ta > tb ? a : b
+
+  return b.percentUsed > a.percentUsed ? b : a
+}
+
+// По каждому окну — свежее из двух списков.
+export const mergeLimits = (a: readonly Limit[], b: readonly Limit[]): Limit[] =>
+  KINDS.flatMap(kind => {
+    const one = fresher(
+      a.find(x => x.kind === kind),
+      b.find(x => x.kind === kind),
+    )
+    return one ? [{ kind: one.kind, percentUsed: one.percentUsed, resetsAt: one.resetsAt }] : []
   })
+
+// Свежие показания этого чата сливаем с общими (их пишут все чаты) и сохраняем.
+async function save($: EngineInterface, list: readonly Limit[]) {
+  if (list.length === 0) return
+  const nowMs = await $.clock.now()
+  const merged = mergeLimits(restore({ list }, nowMs), restore(await $.store.get(LAST_KEY), nowMs))
   await update($, windows, () => merged)
   await $.store.set(LAST_KEY, { list: merged })
+}
+
+// Чат, в котором давно не было ответа, подтягивает показания, сохранённые другими чатами.
+async function sync($: EngineInterface) {
+  const nowMs = await $.clock.now()
+  const mine = restore({ list: await read($, windows) }, nowMs)
+  const merged = mergeLimits(mine, restore(await $.store.get(LAST_KEY), nowMs))
+  if (JSON.stringify(merged) !== JSON.stringify(mine)) await update($, windows, () => merged)
 }
 
 async function tick($: EngineInterface) {
@@ -315,6 +342,7 @@ export const register: Register = (on, options) => {
     const ran = await next(e)
     await tick($)
     $.clock.every(60_000, () => void tick($))
+    $.clock.every(SYNC_MS, () => void sync($))
 
     const saved = Number(await $.store.get(RATIO_KEY))
     if (Number.isFinite(saved) && saved > 0) await update($, ratio, () => clampRatio(saved))

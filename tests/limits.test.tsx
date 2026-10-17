@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, current, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -291,5 +291,58 @@ test('a reading without the session window keeps both halves', async ($, on) => 
   expect(drawn).toContain('Сессия: 40%')
   expect(drawn).toContain('Неделя: 21%')
   expect(await desk.find({ text: '2:00' })).toBeDefined()
+  await desk.unmount()
+})
+
+test('fresher reading of one window', async () => {
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const a = { kind: 'five_hour', percentUsed: 5, resetsAt: iso(NOW + 3600_000) }
+  const b = { kind: 'five_hour', percentUsed: 8, resetsAt: iso(NOW + 3600_000) }
+  const nextWindow = { kind: 'five_hour', percentUsed: 1, resetsAt: iso(NOW + 5 * 3600_000) }
+  // Одно окно — больший расход свежее.
+  expect(fresher(a, b)).toBe(b)
+  expect(fresher(b, a)).toBe(b)
+  // Новое окно (сброс позже) свежее, даже если расход меньше.
+  expect(fresher(b, nextWindow)).toBe(nextWindow)
+  expect(fresher(undefined, a)).toBe(a)
+})
+
+test('idle chats pick up readings saved by other chats', async ($, on) => {
+  const clock = mock.clock(on)
+  const mem = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: mem.get(e.key) }))
+  on('store.set', ($, e) => {
+    mem.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('session.start', ($, e) => ({ cwd: e.cwd }))
+  on('session.usage', () => ({ value: { startedAt: 0, context: { window: 200000 }, rateLimits: [] } as never }))
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  const iso = (ms: number) => new Date(ms).toISOString()
+  const reset5 = iso(clock.now() + 4 * 3600_000)
+  const week = { kind: 'seven_day', percentUsed: 20, resetsAt: iso(clock.now() + 5 * DAY) }
+
+  await $.session.start({ cwd: '/', surface: 'desktop', isInteractive: true })
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 5, resetsAt: reset5 }, week],
+    changed: ['rateLimits'],
+  })
+  const desk = await $.ui.mount({ plugin: 'limits-bar', surface: 'desktop', ...BAND })
+  expect(JSON.stringify(await desk.drawn())).toContain('Сессия: 5%')
+
+  // Другой чат получил ответ и сохранил 8% — этот подтягивает через 15 секунд.
+  mem.set('last', { list: [{ kind: 'five_hour', percentUsed: 8, resetsAt: reset5 }, week] })
+  await clock.advance(15_000)
+  expect(JSON.stringify(await desk.drawn())).toContain('Сессия: 8%')
+
+  // Запоздалое измерение этого чата (6%) не затирает более свежие 8%.
+  await $.session.measure({
+    context: { window: 200000 },
+    rateLimits: [{ kind: 'five_hour', percentUsed: 6, resetsAt: reset5 }, week],
+    changed: ['rateLimits'],
+  })
+  expect(JSON.stringify(await desk.drawn())).toContain('Сессия: 8%')
+  expect(JSON.stringify(mem.get('last'))).toContain('"percentUsed":8')
   await desk.unmount()
 })
