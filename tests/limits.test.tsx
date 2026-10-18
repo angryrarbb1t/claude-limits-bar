@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, capsuleParts, caption, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, capsuleParts, caption, current, fresher, left, ringSvg, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -420,15 +420,31 @@ test('the chevron cycles designs and the choice is kept', async ($, on) => {
   await desk.unmount()
 })
 
-test('capsule parts split the fill between ends and middle', async () => {
-  // 50% из 300px: левый конец залит полностью, середина — (150-10)/280, правый пуст.
-  const half = capsuleParts(50, '#2f7de1', 300)
-  expect(half.left).toContain('class="f" width="10.00"')
-  expect(half.mid).toContain('width="500.0"')
-  expect(half.right).not.toContain('class="f"')
-  // 100% — залиты оба конца.
-  expect(capsuleParts(100, '#2f7de1', 300).right).toContain('class="f" width="10.00"')
+test('capsule parts split the segments between ends and middle', async () => {
+  const five = (pct: number) => segments({ kind: 'five_hour', percentUsed: pct }, NOW)
+  // 50% из 300px: левый конец залит полностью, середина — (150-10)/280 → 500 из 1000, правый пуст.
+  const half = capsuleParts(five(50), 300)
+  expect(half.left).toContain('class="ok" x="0.00" width="10.00"')
+  expect(half.mid).toContain('class="ok" x="0.00" width="500.00"')
+  expect(half.right).not.toContain('class="ok"')
+  // 100% — красная, залиты оба конца.
+  expect(capsuleParts(five(100), 300).right).toContain('class="hot" x="0.00" width="10.00"')
   // 0% — заливки нет нигде.
-  const none = capsuleParts(0, '#2f7de1', 300)
-  expect(none.left + none.mid + none.right).not.toContain('class="f"')
+  const none = capsuleParts(five(0), 300)
+  expect(none.left + none.mid + none.right).not.toMatch(/class="(ok|warn|hot|pace)"/)
+})
+
+test('week pace shows in capsules and rings', async () => {
+  // Неделя впереди: синий расход и серый запас до отметки недели.
+  const ahead = segments(week(20, 0.45), NOW)
+  expect(capsuleParts(ahead, 300).mid).toMatch(/class="ok".*class="pace"/)
+  const ringAhead = ringSvg(ahead)
+  // Дальняя дуга снизу: сначала серый запас, сверху синий расход.
+  expect(ringAhead.indexOf('class="pace"')).toBeLessThan(ringAhead.indexOf('class="ok"'))
+  // Расход обогнал неделю: синий до отметки, после — перерасход цветом зоны.
+  const behind = segments(week(52, 0.45), NOW)
+  expect(capsuleParts(behind, 300).mid).toMatch(/class="ok".*class="warn"/)
+  const ringBehind = ringSvg(behind)
+  expect(ringBehind.indexOf('class="warn"')).toBeLessThan(ringBehind.indexOf('class="ok"'))
+  expect(ringSvg(segments(week(70, 0.45), NOW))).toContain('class="hot"')
 })

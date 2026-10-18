@@ -249,31 +249,43 @@ export const notice = (one: Limit, tone: Tone) => {
   return tone === 'hot' ? `Неделя: ${pct}% — сильный перерасход` : `Неделя: ${pct}% — расход обгоняет неделю`
 }
 
-// Кольцо в духе Apple Watch: дорожка и дуга расхода.
-export const ringSvg = (pct: number, color: string) => {
-  const r = 6.4
-  const len = 2 * Math.PI * r
-  const arc = (Math.max(0, Math.min(100, pct)) / 100) * len
+// Кольцо в духе Apple Watch. Рисует те же сегменты, что полоски: для недели — синий
+// расход поверх серого запаса до отметки недели, либо синий до отметки поверх перерасхода.
+const RING_R = 6.4
+const RING_LEN = 2 * Math.PI * RING_R
+const RING_STYLE =
+  '<style>.t{stroke:#e0dfda}.ok{stroke:#2f7de1}.warn{stroke:#f59e0b}.hot{stroke:#e5484d}.pace{stroke:#b9b7af}' +
+  '@media (prefers-color-scheme:dark){.t{stroke:#3a3a38}.pace{stroke:#6b6b68}}</style>'
+const ringArc = (to: number, attrs: string) =>
+  `<circle cx="8" cy="8" r="${RING_R}" fill="none" stroke-width="2.4" stroke-linecap="round" ` +
+  `stroke-dasharray="${(Math.min(1, to) * RING_LEN).toFixed(2)} ${RING_LEN.toFixed(2)}" transform="rotate(-90 8 8)" ${attrs}/>`
+const ringFrame = (arcs: string) =>
+  '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
+  RING_STYLE +
+  `<circle class="t" cx="8" cy="8" r="${RING_R}" fill="none" stroke-width="2.4"/>` +
+  arcs +
+  '</svg>'
 
-  return (
-    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
-    '<style>.t{stroke:#e0dfda}@media (prefers-color-scheme:dark){.t{stroke:#3a3a38}}</style>' +
-    `<circle class="t" cx="8" cy="8" r="${r}" fill="none" stroke-width="2.4"/>` +
-    (arc > 0.05
-      ? `<circle cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" ` +
-        `stroke-dasharray="${arc.toFixed(2)} ${len.toFixed(2)}" transform="rotate(-90 8 8)"/>`
-      : '') +
-    '</svg>'
+export const ringSvg = (parts: readonly Segment[]) =>
+  ringFrame(
+    parts
+      .filter(p => p.part !== 'track' && p.to > 0.004)
+      // Дуги от нуля: дальняя снизу, ближняя сверху.
+      .sort((x, y) => y.to - x.to)
+      .map(p => ringArc(p.to, `class="${p.part}"`))
+      .join(''),
   )
-}
 
-// Капсула как индикатор заряда в iOS: светлая подложка и полупрозрачная заливка расхода.
-// Собрана из трёх частей: круглые концы фиксированного размера и растягиваемая середина
-// без скруглений — так концы всегда ровные полукруги, какой бы ни была ширина.
+// Одноцветное кольцо (контекст чата).
+export const ringPlainSvg = (pct: number, color: string) =>
+  ringFrame(pct > 0.4 ? ringArc(Math.max(0, Math.min(100, pct)) / 100, `stroke="${color}"`) : '')
+
+// Капсула как индикатор заряда в iOS. Собрана из трёх частей: круглые концы фиксированного
+// размера и растягиваемая середина без скруглений — так концы всегда ровные полукруги.
+// Сегменты те же, что у полосок. Цвета сплошные, заранее смешанные с подложкой: на стыках
+// частей полупрозрачные края сглаживались бы дважды и давали шов.
 export const CAPSULE_PX = 20
 const CAP_R = CAPSULE_PX / 2
-// Заливка — сплошной цвет, заранее смешанный с подложкой (без прозрачности): на стыках
-// частей полупрозрачные края сглаживались бы дважды и давали шов.
 const CAPSULE_BASE = { light: '#e6e5e1', dark: '#3a3a38' }
 const mix = (base: string, tone: string, alpha: number) => {
   const ch = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16)
@@ -284,32 +296,45 @@ const mix = (base: string, tone: string, alpha: number) => {
       .join('')
   )
 }
-const capsuleStyle = (color: string) =>
-  `<style>.b{fill:${CAPSULE_BASE.light}}.f{fill:${mix(CAPSULE_BASE.light, color, 0.22)}}` +
-  `@media (prefers-color-scheme:dark){.b{fill:${CAPSULE_BASE.dark}}.f{fill:${mix(CAPSULE_BASE.dark, color, 0.36)}}}</style>`
+const capsuleFills = (base: string, weak: number, strong: number, pace: string) =>
+  `.b{fill:${base}}.ok{fill:${mix(base, '#2f7de1', weak)}}.warn{fill:${mix(base, '#f59e0b', strong)}}` +
+  `.hot{fill:${mix(base, '#e5484d', strong)}}.pace{fill:${pace}}`
+const CAPSULE_STYLE =
+  `<style>${capsuleFills(CAPSULE_BASE.light, 0.22, 0.38, '#cfcdc6')}` +
+  `@media (prefers-color-scheme:dark){${capsuleFills(CAPSULE_BASE.dark, 0.36, 0.5, '#4d4c48')}}</style>`
 
-const capEnd = (side: 'left' | 'right', fillPx: number, color: string) =>
+// Прямоугольники сегментов, попавших в участок [p0, p1] капсулы шириной total (px).
+const capRects = (parts: readonly Segment[], total: number, p0: number, p1: number, scale: number) =>
+  parts
+    .filter(p => p.part !== 'track')
+    .map(p => {
+      const x0 = Math.max(p.from * total, p0)
+      const x1 = Math.min(p.to * total, p1)
+      return x1 - x0 > 0.05
+        ? `<rect class="${p.part}" x="${((x0 - p0) * scale).toFixed(2)}" width="${((x1 - x0) * scale).toFixed(2)}" height="${CAPSULE_PX}"/>`
+        : ''
+    })
+    .join('')
+
+const capEnd = (side: 'left' | 'right', rects: string) =>
   `<svg xmlns="http://www.w3.org/2000/svg" width="${CAP_R}" height="${CAPSULE_PX}" viewBox="0 0 ${CAP_R} ${CAPSULE_PX}">` +
-  capsuleStyle(color) +
+  CAPSULE_STYLE +
   `<clipPath id="e"><rect x="${side === 'left' ? 0 : -CAP_R}" width="${CAPSULE_PX}" height="${CAPSULE_PX}" rx="${CAP_R}"/></clipPath>` +
-  `<g clip-path="url(#e)"><rect class="b" width="${CAP_R}" height="${CAPSULE_PX}"/>` +
-  (fillPx > 0.05 ? `<rect class="f" width="${fillPx.toFixed(2)}" height="${CAPSULE_PX}"/>` : '') +
-  '</g></svg>'
+  `<g clip-path="url(#e)"><rect class="b" width="${CAP_R}" height="${CAPSULE_PX}"/>${rects}</g></svg>`
 
-export const capsuleParts = (pct: number, color: string, approxPx = 300) => {
+export const capsuleParts = (parts: readonly Segment[], approxPx = 300) => {
   const total = Math.max(60, Math.round(approxPx))
-  const fillPx = (Math.max(0, Math.min(100, pct)) / 100) * total
-  const mid = Math.max(0, Math.min(1, (fillPx - CAP_R) / (total - 2 * CAP_R)))
+  const midScale = 1000 / (total - 2 * CAP_R)
 
   return {
-    left: capEnd('left', Math.min(CAP_R, fillPx), color),
+    left: capEnd('left', capRects(parts, total, 0, CAP_R, 1)),
     mid:
       `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${CAPSULE_PX}" viewBox="0 0 1000 ${CAPSULE_PX}" preserveAspectRatio="none">` +
-      capsuleStyle(color) +
+      CAPSULE_STYLE +
       `<rect class="b" width="1000" height="${CAPSULE_PX}"/>` +
-      (mid > 0 ? `<rect class="f" width="${(mid * 1000).toFixed(1)}" height="${CAPSULE_PX}"/>` : '') +
+      capRects(parts, total, CAP_R, total - CAP_R, midScale) +
       '</svg>',
-    right: capEnd('right', Math.max(0, Math.min(CAP_R, fillPx - (total - CAP_R))), color),
+    right: capEnd('right', capRects(parts, total, total - CAP_R, total, 1)),
   }
 }
 
@@ -547,7 +572,6 @@ export const register: Register = (on, options) => {
     // Примерно 8px на клетку, минус пиктограммы, время, подписи, шеврон и промежутки.
     const totalPx = (e.props.bodyColumns - labelCells - CHEV_CELLS) * 8 - 2 * (72 + ICON_PX + 6) - 24
     const nameOf = (one: Limit) => (one.kind === 'five_hour' ? 'Сессия' : 'Неделя')
-    const toneColor = (one: Limit) => TONE_FILL[barTone(one, nowMs, cfg)]
 
     // Половины с перетаскиваемым стыком: внутри — полоска (дизайн 0) или капсула (дизайн 1).
     const halves = (rows: readonly Limit[], how: { hasSeam?: boolean; isDemo?: boolean; isCapsule?: boolean } = {}) =>
@@ -579,7 +603,7 @@ export const register: Register = (on, options) => {
             <Box key={one.kind} width={width} alignItems="center" gap={0.5} paddingLeft={i > 0 ? SEP_CELLS : 0}>
               <Box flexGrow={1} flexShrink={1} minWidth={0} position="relative">
                 {(() => {
-                  const cap3 = capsuleParts(one.percentUsed, toneColor(one), totalPx * part + 2 * 72)
+                  const cap3 = capsuleParts(segments(one, nowMs, cfg), totalPx * part + 2 * 72)
                   return (
                     <Box alignItems="center">
                       <Svg source={cap3.left} width={CAP_R} height={CAPSULE_PX} alt="Начало капсулы" />
@@ -626,9 +650,9 @@ export const register: Register = (on, options) => {
       })
 
     // Кольцо с подписью «9% · 4:41».
-    const ring = (key: string, pct: number, color: string, alt: string, text: JSX.Element) => (
+    const ring = (key: string, source: string, alt: string, text: JSX.Element) => (
       <Box key={key} alignItems="center" gap={0.5} flexShrink={0}>
-        <Svg source={ringSvg(pct, color)} width={16} height={16} alt={alt} />
+        <Svg source={source} width={16} height={16} alt={alt} />
         {text}
       </Box>
     )
@@ -637,8 +661,7 @@ export const register: Register = (on, options) => {
       const time = left(one.resetsAt, nowMs)
       return ring(
         one.kind,
-        one.percentUsed,
-        toneColor(one),
+        ringSvg(segments(one, nowMs, cfg)),
         `${nameOf(one)}: ${Math.round(one.percentUsed)}%`,
         <Text>
           <Text color="inactive">{cap.pct}</Text>
@@ -648,12 +671,16 @@ export const register: Register = (on, options) => {
     })
     const ctxRing =
       ctxPct >= 0
-        ? ring('ctx', ctxPct, ctxPct >= 80 ? TONE_FILL.hot : ctxPct >= 70 ? TONE_FILL.warn : '#8f8e88', `Контекст: ${ctxPct}%`,
+        ? ring(
+            'ctx',
+            ringPlainSvg(ctxPct, ctxPct >= 80 ? TONE_FILL.hot : ctxPct >= 70 ? TONE_FILL.warn : '#8f8e88'),
+            `Контекст: ${ctxPct}%`,
             <Text>
               <Text dimColor>Контекст </Text>
               <Text color="inactive">{`${Math.round(ctxPct)}%`}</Text>
-            </Text>)
-        : ring('ctx', 0, '#8f8e88', 'Контекст: нет данных', <Text dimColor>Контекст —</Text>)
+            </Text>,
+          )
+        : ring('ctx', ringPlainSvg(0, '#8f8e88'), 'Контекст: нет данных', <Text dimColor>Контекст —</Text>)
 
     const content =
       shown === 1 ? (
