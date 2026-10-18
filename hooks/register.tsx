@@ -268,21 +268,57 @@ export const ringSvg = (pct: number, color: string) => {
 }
 
 // Капсула как индикатор заряда в iOS: светлая подложка и полупрозрачная заливка расхода.
+// Собрана из трёх частей: круглые концы фиксированного размера и растягиваемая середина
+// без скруглений — так концы всегда ровные полукруги, какой бы ни была ширина.
 export const CAPSULE_PX = 20
-export const capsuleSvg = (pct: number, color: string, approxPx = 300) => {
-  const w = Math.max(60, Math.round(approxPx))
-  const h = CAPSULE_PX
-  const fill = (Math.max(0, Math.min(100, pct)) / 100) * w
-
+const CAP_R = CAPSULE_PX / 2
+// Заливка — сплошной цвет, заранее смешанный с подложкой (без прозрачности): на стыках
+// частей полупрозрачные края сглаживались бы дважды и давали шов.
+const CAPSULE_BASE = { light: '#e6e5e1', dark: '#3a3a38' }
+const mix = (base: string, tone: string, alpha: number) => {
+  const ch = (hex: string, i: number) => parseInt(hex.slice(1 + i * 2, 3 + i * 2), 16)
   return (
-    `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
-    '<style>.b{fill:#e6e5e1}@media (prefers-color-scheme:dark){.b{fill:#3a3a38}}</style>' +
-    `<clipPath id="k"><rect width="${w}" height="${h}" rx="${h / 2}"/></clipPath>` +
-    `<g clip-path="url(#k)"><rect class="b" width="${w}" height="${h}"/>` +
-    (fill > 0 ? `<rect width="${fill.toFixed(1)}" height="${h}" fill="${color}" fill-opacity=".22"/>` : '') +
-    '</g></svg>'
+    '#' +
+    [0, 1, 2]
+      .map(i => Math.round(ch(base, i) * (1 - alpha) + ch(tone, i) * alpha).toString(16).padStart(2, '0'))
+      .join('')
   )
 }
+const capsuleStyle = (color: string) =>
+  `<style>.b{fill:${CAPSULE_BASE.light}}.f{fill:${mix(CAPSULE_BASE.light, color, 0.22)}}` +
+  `@media (prefers-color-scheme:dark){.b{fill:${CAPSULE_BASE.dark}}.f{fill:${mix(CAPSULE_BASE.dark, color, 0.36)}}}</style>`
+
+const capEnd = (side: 'left' | 'right', fillPx: number, color: string) =>
+  `<svg xmlns="http://www.w3.org/2000/svg" width="${CAP_R}" height="${CAPSULE_PX}" viewBox="0 0 ${CAP_R} ${CAPSULE_PX}">` +
+  capsuleStyle(color) +
+  `<clipPath id="e"><rect x="${side === 'left' ? 0 : -CAP_R}" width="${CAPSULE_PX}" height="${CAPSULE_PX}" rx="${CAP_R}"/></clipPath>` +
+  `<g clip-path="url(#e)"><rect class="b" width="${CAP_R}" height="${CAPSULE_PX}"/>` +
+  (fillPx > 0.05 ? `<rect class="f" width="${fillPx.toFixed(2)}" height="${CAPSULE_PX}"/>` : '') +
+  '</g></svg>'
+
+export const capsuleParts = (pct: number, color: string, approxPx = 300) => {
+  const total = Math.max(60, Math.round(approxPx))
+  const fillPx = (Math.max(0, Math.min(100, pct)) / 100) * total
+  const mid = Math.max(0, Math.min(1, (fillPx - CAP_R) / (total - 2 * CAP_R)))
+
+  return {
+    left: capEnd('left', Math.min(CAP_R, fillPx), color),
+    mid:
+      `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${CAPSULE_PX}" viewBox="0 0 1000 ${CAPSULE_PX}" preserveAspectRatio="none">` +
+      capsuleStyle(color) +
+      `<rect class="b" width="1000" height="${CAPSULE_PX}"/>` +
+      (mid > 0 ? `<rect class="f" width="${(mid * 1000).toFixed(1)}" height="${CAPSULE_PX}"/>` : '') +
+      '</svg>',
+    right: capEnd('right', Math.max(0, Math.min(CAP_R, fillPx - (total - CAP_R))), color),
+  }
+}
+
+// Шеврон «›»: листает дизайны. Цвет подписей, по центру строки.
+const CHEVRON_SVG =
+  '<svg xmlns="http://www.w3.org/2000/svg" width="7" height="12" viewBox="0 0 7 12">' +
+  '<style>.c{fill:none;stroke:#898781;stroke-width:1.4;stroke-linecap:round;stroke-linejoin:round}' +
+  '@media (prefers-color-scheme:dark){.c{stroke:#9a9893}}</style>' +
+  '<path class="c" d="M1.5 1.5L5.5 6L1.5 10.5"/></svg>'
 
 export const TONE_FILL: Record<Tone, string> = { ok: '#2f7de1', warn: '#f59e0b', hot: '#e5484d' }
 
@@ -542,11 +578,18 @@ export const register: Register = (on, options) => {
           return (
             <Box key={one.kind} width={width} alignItems="center" gap={0.5} paddingLeft={i > 0 ? SEP_CELLS : 0}>
               <Box flexGrow={1} flexShrink={1} minWidth={0} position="relative">
-                <Svg
-                  source={capsuleSvg(one.percentUsed, toneColor(one), totalPx * part + 2 * 72)}
-                  height={CAPSULE_PX}
-                  alt={`${nameOf(one)}: ${Math.round(one.percentUsed)}%`}
-                />
+                {(() => {
+                  const cap3 = capsuleParts(one.percentUsed, toneColor(one), totalPx * part + 2 * 72)
+                  return (
+                    <Box alignItems="center">
+                      <Svg source={cap3.left} width={CAP_R} height={CAPSULE_PX} alt="Начало капсулы" />
+                      <Box flexGrow={1} flexShrink={1} minWidth={0}>
+                        <Svg source={cap3.mid} height={CAPSULE_PX} alt={`${nameOf(one)}: ${Math.round(one.percentUsed)}%`} />
+                      </Box>
+                      <Svg source={cap3.right} width={CAP_R} height={CAPSULE_PX} alt="Конец капсулы" />
+                    </Box>
+                  )
+                })()}
                 <Box position="absolute" top={0} left={0} right={0} bottom={0} alignItems="center" justifyContent="space-between" paddingX={1}>
                   <Text size="footnote" color="inactive">
                     {one.kind === 'five_hour' ? '5 ч' : 'Неделя'} · {cap.pct}
@@ -645,8 +688,8 @@ export const register: Register = (on, options) => {
             <Box flexGrow={1} flexShrink={1} minWidth={0} alignItems="center">
               {content}
             </Box>
-            <Box width={CHEV_CELLS} flexShrink={0} justifyContent="flex-end">
-              <Text dimColor>›</Text>
+            <Box width={CHEV_CELLS} flexShrink={0} justifyContent="center" alignItems="center">
+              <Svg source={CHEVRON_SVG} width={7} height={12} alt="Следующий вид" />
             </Box>
             <Box position="absolute" top={0} left={0} right={0} bottom={0}>
               <Client

@@ -1,6 +1,6 @@
 import { expect, mock, test } from 'claude-code/testing'
 
-import { barSvg, barTone, caption, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
+import { barSvg, barTone, capsuleParts, caption, current, fresher, left, readConfig, restore, segments, sessionTone, weekElapsed } from '../hooks/register'
 
 const scroll = { offset: 0, bodyRows: 10 }
 const BAND = {
@@ -387,13 +387,16 @@ test('the chevron cycles designs and the choice is kept', async ($, on) => {
   }
 
   // 0 — полоски: шеврон на месте.
-  expect(await desk.find({ text: '›' })).toBeDefined()
+  expect(await drawn()).toContain('Следующий вид')
   expect(await drawn()).toContain('M8 8V3.9')
 
   // 1 — капсулы: подпись внутри, мелкий шрифт.
   await clickChevron()
   expect(await desk.find({ text: '5 ч · 9%' })).toBeDefined()
   expect(await drawn()).toContain('"size":"footnote"')
+  // Концы капсулы — ровные полукруги фиксированного размера, середина тянется.
+  expect(await drawn()).toContain('Начало капсулы')
+  expect(await drawn()).toContain('Конец капсулы')
   expect(mem.get('design')).toBe(1)
 
   // 2 — кольца по центру: стык не тянется.
@@ -415,4 +418,17 @@ test('the chevron cycles designs and the choice is kept', async ($, on) => {
   expect(await drawn()).toContain('M8 8V3.9')
   expect(mem.get('design')).toBe(0)
   await desk.unmount()
+})
+
+test('capsule parts split the fill between ends and middle', async () => {
+  // 50% из 300px: левый конец залит полностью, середина — (150-10)/280, правый пуст.
+  const half = capsuleParts(50, '#2f7de1', 300)
+  expect(half.left).toContain('class="f" width="10.00"')
+  expect(half.mid).toContain('width="500.0"')
+  expect(half.right).not.toContain('class="f"')
+  // 100% — залиты оба конца.
+  expect(capsuleParts(100, '#2f7de1', 300).right).toContain('class="f" width="10.00"')
+  // 0% — заливки нет нигде.
+  const none = capsuleParts(0, '#2f7de1', 300)
+  expect(none.left + none.mid + none.right).not.toContain('class="f"')
 })
