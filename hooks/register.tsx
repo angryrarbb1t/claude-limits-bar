@@ -8,10 +8,18 @@ const now = atom({ plugin: 'limits-bar', key: 'now' } as const, 0)
 const ratio = atom({ plugin: 'limits-bar', key: 'ratio' } as const, 0.5)
 // Сепаратор у стыка: none — скрыт, near — курсор рядом, drag — тянут (рисует слой мыши).
 const seam = atom({ plugin: 'limits-bar', key: 'seam' } as const, 'none')
+// Какой дизайн показан (листается шевроном «›»): 0 полоски, 1 капсулы, 2 кольца, 3 кольца + контекст.
+const design = atom({ plugin: 'limits-bar', key: 'design' } as const, 0)
+// Заполненность контекста этого чата, %; −1 — пока неизвестна.
+const ctx = atom({ plugin: 'limits-bar', key: 'ctx' } as const, -1)
 // Какие полоски сейчас анимируют переход порога: kind → до какого момента (мс).
 const flash = atom({ plugin: 'limits-bar', key: 'flash' } as const, {})
 
 const RATIO_KEY = 'ratio'
+const DESIGN_KEY = 'design'
+export const DESIGNS = 4
+// Колонка шеврона «›» справа, в клетках.
+const CHEV_CELLS = 2
 // Последние показания лимитов: Claude Code узнаёт их только из ответа модели,
 // поэтому до первого ответа в новой сессии показываем сохранённые.
 const LAST_KEY = 'last'
@@ -241,6 +249,43 @@ export const notice = (one: Limit, tone: Tone) => {
   return tone === 'hot' ? `Неделя: ${pct}% — сильный перерасход` : `Неделя: ${pct}% — расход обгоняет неделю`
 }
 
+// Кольцо в духе Apple Watch: дорожка и дуга расхода.
+export const ringSvg = (pct: number, color: string) => {
+  const r = 6.4
+  const len = 2 * Math.PI * r
+  const arc = (Math.max(0, Math.min(100, pct)) / 100) * len
+
+  return (
+    '<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 16 16">' +
+    '<style>.t{stroke:#e0dfda}@media (prefers-color-scheme:dark){.t{stroke:#3a3a38}}</style>' +
+    `<circle class="t" cx="8" cy="8" r="${r}" fill="none" stroke-width="2.4"/>` +
+    (arc > 0.05
+      ? `<circle cx="8" cy="8" r="${r}" fill="none" stroke="${color}" stroke-width="2.4" stroke-linecap="round" ` +
+        `stroke-dasharray="${arc.toFixed(2)} ${len.toFixed(2)}" transform="rotate(-90 8 8)"/>`
+      : '') +
+    '</svg>'
+  )
+}
+
+// Капсула как индикатор заряда в iOS: светлая подложка и полупрозрачная заливка расхода.
+export const CAPSULE_PX = 20
+export const capsuleSvg = (pct: number, color: string, approxPx = 300) => {
+  const w = Math.max(60, Math.round(approxPx))
+  const h = CAPSULE_PX
+  const fill = (Math.max(0, Math.min(100, pct)) / 100) * w
+
+  return (
+    `<svg xmlns="http://www.w3.org/2000/svg" width="4000" height="${h}" viewBox="0 0 ${w} ${h}" preserveAspectRatio="none">` +
+    '<style>.b{fill:#e6e5e1}@media (prefers-color-scheme:dark){.b{fill:#3a3a38}}</style>' +
+    `<clipPath id="k"><rect width="${w}" height="${h}" rx="${h / 2}"/></clipPath>` +
+    `<g clip-path="url(#k)"><rect class="b" width="${w}" height="${h}"/>` +
+    (fill > 0 ? `<rect width="${fill.toFixed(1)}" height="${h}" fill="${color}" fill-opacity=".22"/>` : '') +
+    '</g></svg>'
+  )
+}
+
+export const TONE_FILL: Record<Tone, string> = { ok: '#2f7de1', warn: '#f59e0b', hot: '#e5484d' }
+
 const pick = (list: readonly Limit[]) =>
   KINDS.map(kind => list.find(one => one.kind === kind)).filter(
     (one): one is Limit => one !== undefined,
@@ -328,6 +373,9 @@ async function sync($: EngineInterface) {
   const mine = restore({ list: await read($, windows) }, nowMs)
   const merged = mergeLimits(mine, restore(await $.store.get(LAST_KEY), nowMs))
   if (JSON.stringify(merged) !== JSON.stringify(mine)) await update($, windows, () => merged)
+  // Дизайн, выбранный в другом чате.
+  const chosen = Number(await $.store.get(DESIGN_KEY))
+  if (Number.isInteger(chosen) && chosen >= 0 && chosen !== (await read($, design))) await update($, design, () => chosen % DESIGNS)
 }
 
 async function tick($: EngineInterface) {
@@ -366,7 +414,12 @@ export const register: Register = (on, options) => {
     const saved = Number(await $.store.get(RATIO_KEY))
     if (Number.isFinite(saved) && saved > 0) await update($, ratio, () => clampRatio(saved))
 
+    const chosen = Number(await $.store.get(DESIGN_KEY))
+    if (Number.isInteger(chosen) && chosen >= 0) await update($, design, () => chosen % DESIGNS)
+
     const usage = await $.session.usage().catch(() => null)
+    const ctxPct = usage?.context.percent
+    if (typeof ctxPct === 'number') await update($, ctx, () => ctxPct)
     if (usage && usage.rateLimits.length > 0) {
       await save($, usage.rateLimits)
     } else {
@@ -381,6 +434,8 @@ export const register: Register = (on, options) => {
   })
 
   on('session.measure', async ($, e, next) => {
+    const ctxPct = e.context.percent
+    if (typeof ctxPct === 'number') await update($, ctx, () => ctxPct)
     if (e.changed.includes('rateLimits')) {
       const nowMs = await $.clock.now()
       const before = pick(await read($, windows))
@@ -394,7 +449,12 @@ export const register: Register = (on, options) => {
   })
 
   on('ui.message', async ($, e, next) => {
-    const data = e.data as { ratio?: number; isDone?: boolean; seam?: string } | null
+    const data = e.data as { ratio?: number; isDone?: boolean; seam?: string; next?: boolean } | null
+    if (data?.next) {
+      const value = ((await read($, design)) + 1) % DESIGNS
+      await update($, design, () => value)
+      await $.store.set(DESIGN_KEY, value)
+    }
     if (data?.seam === 'none' || data?.seam === 'near' || data?.seam === 'drag') {
       const value = data.seam
       await update($, seam, () => value)
@@ -443,20 +503,25 @@ export const register: Register = (on, options) => {
     const share = await read($, ratio)
     const isSeamShown = (await read($, seam)) === 'near'
     const flashes: Record<string, number> = await read($, flash)
+    const shown = (await read($, design)) % DESIGNS
+    const ctxPct = await read($, ctx)
     const clockMs = await $.clock.now()
     const leftPct = Math.round(share * 100)
     const labelCells = SHOW_DEMO ? 13 : 0
-    // Примерно 8px на клетку, минус пиктограммы, время, подписи и промежутки.
-    const totalPx = (e.props.bodyColumns - labelCells) * 8 - 2 * (72 + ICON_PX + 6) - 24
+    // Примерно 8px на клетку, минус пиктограммы, время, подписи, шеврон и промежутки.
+    const totalPx = (e.props.bodyColumns - labelCells - CHEV_CELLS) * 8 - 2 * (72 + ICON_PX + 6) - 24
+    const nameOf = (one: Limit) => (one.kind === 'five_hour' ? 'Сессия' : 'Неделя')
+    const toneColor = (one: Limit) => TONE_FILL[barTone(one, nowMs, cfg)]
 
-    const halves = (rows: readonly Limit[], how: { hasSeam?: boolean; isDemo?: boolean } = {}) =>
+    // Половины с перетаскиваемым стыком: внутри — полоска (дизайн 0) или капсула (дизайн 1).
+    const halves = (rows: readonly Limit[], how: { hasSeam?: boolean; isDemo?: boolean; isCapsule?: boolean } = {}) =>
       rows.map((one, i) => {
         const isFirst = i === 0 && rows.length > 1
         const part = one.kind === 'five_hour' ? share : 1 - share
-        const name = one.kind === 'five_hour' ? 'Сессия' : 'Неделя'
         const width = rows.length === 1 ? '100%' : `${one.kind === 'five_hour' ? leftPct : 100 - leftPct}%`
         const parts = segments(one, nowMs, cfg)
         const ico = ICONS[one.kind]
+        const cap = caption(one, nowMs)
         const isFlashing = (flashes[one.kind] ?? 0) > clockMs
         const anim: Anim | undefined = !cfg.animation
           ? undefined
@@ -467,6 +532,34 @@ export const register: Register = (on, options) => {
             : isFlashing
               ? 'once'
               : undefined
+        const seamBox = isFirst && (
+          <Box width={SEP_CELLS} flexShrink={0} justifyContent="center" alignItems="center">
+            {how.hasSeam && isSeamShown && <Svg source={SEP_SVG} width={1} height={12} alt="Стык" />}
+          </Box>
+        )
+
+        if (how.isCapsule) {
+          return (
+            <Box key={one.kind} width={width} alignItems="center" gap={0.5} paddingLeft={i > 0 ? SEP_CELLS : 0}>
+              <Box flexGrow={1} flexShrink={1} minWidth={0} position="relative">
+                <Svg
+                  source={capsuleSvg(one.percentUsed, toneColor(one), totalPx * part + 2 * 72)}
+                  height={CAPSULE_PX}
+                  alt={`${nameOf(one)}: ${Math.round(one.percentUsed)}%`}
+                />
+                <Box position="absolute" top={0} left={0} right={0} bottom={0} alignItems="center" justifyContent="space-between" paddingX={1}>
+                  <Text size="footnote" color="inactive">
+                    {one.kind === 'five_hour' ? '5 ч' : 'Неделя'} · {cap.pct}
+                  </Text>
+                  <Text size="footnote" dimColor>
+                    {left(one.resetsAt, nowMs)}
+                  </Text>
+                </Box>
+              </Box>
+              {seamBox}
+            </Box>
+          )
+        }
 
         return (
           <Box key={one.kind} width={width} alignItems="center" gap={0.5} paddingLeft={i > 0 ? SEP_CELLS : 0}>
@@ -476,26 +569,66 @@ export const register: Register = (on, options) => {
               </Box>
             )}
             <Box flexGrow={1} flexShrink={1} minWidth={0}>
-              <Svg
-                source={barSvg(parts, totalPx * part, anim)}
-                height={BAR_PX}
-                alt={`${name}: ${Math.round(one.percentUsed)}%`}
-              />
+              <Svg source={barSvg(parts, totalPx * part, anim)} height={BAR_PX} alt={`${nameOf(one)}: ${Math.round(one.percentUsed)}%`} />
             </Box>
             <Box flexShrink={0}>
               <Text>
-                <Text color="inactive">{caption(one, nowMs).pct}</Text>
-                <Text dimColor>{caption(one, nowMs).rest}</Text>
+                <Text color="inactive">{cap.pct}</Text>
+                <Text dimColor>{cap.rest}</Text>
               </Text>
             </Box>
-            {isFirst && (
-              <Box width={SEP_CELLS} flexShrink={0} justifyContent="center" alignItems="center">
-                {how.hasSeam && isSeamShown && <Svg source={SEP_SVG} width={1} height={12} alt="Стык" />}
-              </Box>
-            )}
+            {seamBox}
           </Box>
         )
       })
+
+    // Кольцо с подписью «9% · 4:41».
+    const ring = (key: string, pct: number, color: string, alt: string, text: JSX.Element) => (
+      <Box key={key} alignItems="center" gap={0.5} flexShrink={0}>
+        <Svg source={ringSvg(pct, color)} width={16} height={16} alt={alt} />
+        {text}
+      </Box>
+    )
+    const limitRings = list.map(one => {
+      const cap = caption(one, nowMs)
+      const time = left(one.resetsAt, nowMs)
+      return ring(
+        one.kind,
+        one.percentUsed,
+        toneColor(one),
+        `${nameOf(one)}: ${Math.round(one.percentUsed)}%`,
+        <Text>
+          <Text color="inactive">{cap.pct}</Text>
+          <Text dimColor>{time ? ` · ${time}` : ''}</Text>
+        </Text>,
+      )
+    })
+    const ctxRing =
+      ctxPct >= 0
+        ? ring('ctx', ctxPct, ctxPct >= 80 ? TONE_FILL.hot : ctxPct >= 70 ? TONE_FILL.warn : '#8f8e88', `Контекст: ${ctxPct}%`,
+            <Text>
+              <Text dimColor>Контекст </Text>
+              <Text color="inactive">{`${Math.round(ctxPct)}%`}</Text>
+            </Text>)
+        : ring('ctx', 0, '#8f8e88', 'Контекст: нет данных', <Text dimColor>Контекст —</Text>)
+
+    const content =
+      shown === 1 ? (
+        halves(list, { hasSeam: true, isCapsule: true })
+      ) : shown === 2 ? (
+        <Box flexGrow={1} justifyContent="center" alignItems="center" gap={2}>
+          {limitRings}
+        </Box>
+      ) : shown === 3 ? (
+        <Box flexGrow={1} alignItems="center" justifyContent="space-between">
+          {ctxRing}
+          <Box alignItems="center" gap={2}>
+            {limitRings}
+          </Box>
+        </Box>
+      ) : (
+        halves(list, { hasSeam: true })
+      )
 
     const label = (text: string) =>
       SHOW_DEMO ? (
@@ -508,10 +641,21 @@ export const register: Register = (on, options) => {
       <Box flexDirection="column" gap={0.5}>
         <Box alignItems="center">
           {label('сейчас')}
-          <Box position="relative" flexGrow={1} minWidth={0}>
-            {halves(list, { hasSeam: true })}
+          <Box position="relative" flexGrow={1} minWidth={0} alignItems="center">
+            <Box flexGrow={1} flexShrink={1} minWidth={0} alignItems="center">
+              {content}
+            </Box>
+            <Box width={CHEV_CELLS} flexShrink={0} justifyContent="flex-end">
+              <Text dimColor>›</Text>
+            </Box>
             <Box position="absolute" top={0} left={0} right={0} bottom={0}>
-              <Client key="handle" module="./handle.tsx" props={{ ratio: share }} width="100%" height="100%" />
+              <Client
+                key="handle"
+                module="./handle.tsx"
+                props={{ ratio: share, canDrag: shown <= 1, chevCells: CHEV_CELLS }}
+                width="100%"
+                height="100%"
+              />
             </Box>
           </Box>
         </Box>

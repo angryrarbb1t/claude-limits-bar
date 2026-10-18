@@ -130,8 +130,8 @@ test('band draws two bars and the split drags', async ($, on) => {
 
   // Отпустили: пропорция запомнилась, линия снова в раскладке, черта слоя исчезла.
   await desk.pointer({ type: 'up', x: 70, y: 0, button: 'left' })
-  expect(JSON.stringify(await desk.drawn())).toContain('"width":"71%"')
-  expect(JSON.stringify(await desk.drawn())).toContain('"width":"29%"')
+  expect(JSON.stringify(await desk.drawn())).toContain('"width":"72%"')
+  expect(JSON.stringify(await desk.drawn())).toContain('"width":"28%"')
   expect(await seamInLayout()).toBe(true)
   expect(await desk.find({ text: '│', in: 'handle' })).toBeUndefined()
 
@@ -139,7 +139,7 @@ test('band draws two bars and the split drags', async ($, on) => {
   await desk.pointer({ type: 'down', x: 5, y: 0, button: 'left' })
   await desk.pointer({ type: 'move', x: 30, y: 0, button: 'left' })
   await desk.pointer({ type: 'up', x: 30, y: 0, button: 'left' })
-  expect(JSON.stringify(await desk.drawn())).toContain('"width":"71%"')
+  expect(JSON.stringify(await desk.drawn())).toContain('"width":"72%"')
   await desk.unmount()
 
   const term = await $.ui.mount({ plugin: 'limits-bar', surface: 'terminal', ...BAND })
@@ -357,5 +357,62 @@ test('idle chats pick up readings saved by other chats', async ($, on) => {
   })
   expect(JSON.stringify(await desk.drawn())).toContain('Сессия: 8%')
   expect(JSON.stringify(mem.get('last'))).toContain('"percentUsed":8')
+  await desk.unmount()
+})
+
+test('the chevron cycles designs and the choice is kept', async ($, on) => {
+  const clock = mock.clock(on)
+  const mem = new Map<string, unknown>()
+  on('store.get', ($, e) => ({ value: mem.get(e.key) }))
+  on('store.set', ($, e) => {
+    mem.set(e.key, e.value)
+    return { value: undefined }
+  })
+  on('session.measure', ($, e) => ({ changed: e.changed }))
+  const iso = (ms: number) => new Date(ms).toISOString()
+  await $.session.measure({
+    context: { window: 200000, percent: 38 },
+    rateLimits: [
+      { kind: 'five_hour', percentUsed: 9, resetsAt: iso(clock.now() + 4 * 3600_000) },
+      { kind: 'seven_day', percentUsed: 21, resetsAt: iso(clock.now() + 5 * DAY) },
+    ],
+    changed: ['rateLimits', 'context'],
+  })
+  const desk = await $.ui.mount({ plugin: 'limits-bar', surface: 'desktop', ...BAND })
+  await desk.resize({ columns: 100, rows: 1 })
+  const drawn = async () => JSON.stringify(await desk.drawn())
+  const clickChevron = async () => {
+    await desk.pointer({ type: 'down', x: 99, y: 0, button: 'left' })
+    await desk.pointer({ type: 'up', x: 99, y: 0, button: 'left' })
+  }
+
+  // 0 — полоски: шеврон на месте.
+  expect(await desk.find({ text: '›' })).toBeDefined()
+  expect(await drawn()).toContain('M8 8V3.9')
+
+  // 1 — капсулы: подпись внутри, мелкий шрифт.
+  await clickChevron()
+  expect(await desk.find({ text: '5 ч · 9%' })).toBeDefined()
+  expect(await drawn()).toContain('"size":"footnote"')
+  expect(mem.get('design')).toBe(1)
+
+  // 2 — кольца по центру: стык не тянется.
+  await clickChevron()
+  expect(await drawn()).toContain('stroke-dasharray')
+  expect(await desk.find({ text: '5 ч · 9%' })).toBeUndefined()
+  await desk.pointer({ type: 'down', x: 49, y: 0, button: 'left' })
+  await desk.pointer({ type: 'move', x: 70, y: 0, button: 'left' })
+  expect(await desk.find({ text: '│', in: 'handle' })).toBeUndefined()
+  await desk.pointer({ type: 'up', x: 70, y: 0, button: 'left' })
+
+  // 3 — кольца + контекст этого чата.
+  await clickChevron()
+  expect(await desk.find({ text: '38%' })).toBeDefined()
+  expect(await drawn()).toContain('Контекст')
+
+  // По кругу — снова полоски.
+  await clickChevron()
+  expect(await drawn()).toContain('M8 8V3.9')
+  expect(mem.get('design')).toBe(0)
   await desk.unmount()
 })
